@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/ss7-oracle/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { ethers } from "ethers";
