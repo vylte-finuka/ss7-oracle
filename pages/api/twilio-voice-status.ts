@@ -15,7 +15,7 @@ async function notifyOracle(data: unknown) {
   });
 }
 
-export async function POST(req: NextRequest) {
+export default async function POST(req: NextRequest) {
   const formData = await req.formData();
   const params = Object.fromEntries(formData.entries());
 

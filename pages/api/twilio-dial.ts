@@ -9,7 +9,7 @@ const client = twilio(accountSid, authToken);
 
 const ORACLE_URL = process.env.ORACLE_URL!;
 
-export async function POST(req: NextRequest) {
+export default async function POST(req: NextRequest) {
   const apiKey = req.headers.get("x-api-key");
   if (apiKey !== process.env.ORACLE_API_KEY!) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

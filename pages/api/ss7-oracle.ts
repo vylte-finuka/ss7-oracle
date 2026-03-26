@@ -51,7 +51,7 @@ async function safeRead(callId: string) {
   return null;
 }
 
-export async function POST(req: NextRequest) {
+export default async function POST(req: NextRequest) {
   try {
     const apiKey = req.headers.get("x-api-key");
     if (apiKey !== ORACLE_API_KEY) {
