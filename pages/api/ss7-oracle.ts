@@ -43,7 +43,9 @@ async function safeRead(callId: string) {
     try {
       const info = await contract.calls(callId);
       if (info.exists) return info;
-    } catch {}
+    } catch (e) {
+      console.warn("safeRead retry error:", e);
+    }
     await sleep(500);
   }
   return null;
@@ -56,41 +58,88 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.json();
+    // Support pour Twilio (form-urlencoded) et appels JSON directs (depuis /twilio-dial ou /twilio-dial-3cx)
+    let body: any;
+    const contentType = req.headers.get("content-type") || "";
 
-    const callId: string = body.callId;
-    const status: string = body.status ?? "QUEUED";
+    if (contentType.includes("application/json")) {
+      body = await req.json();
+    } else {
+      // Twilio statusCallback
+      const formData = await req.formData();
+      body = Object.fromEntries(formData.entries());
+    }
 
-    // Données PSTN venant de l’UVM
-    const opcode = body.opcode;
-    const msgType = body.msgType;
-    const callerHash = body.callerHash;
-    const calledHash = body.calledHash;
-    const timestamp = body.timestamp;
-    const extra = body.extra;
+    const rawCallSid = body.callSid || body.CallSid;
+    if (!rawCallSid) {
+      return NextResponse.json({ error: "Missing callSid or CallSid" }, { status: 400 });
+    }
 
-    // Payload SS7 (base64 → bytes)
-    const payloadBytes = body.payload
-      ? Buffer.from(body.payload, "base64")
-      : Buffer.from([]);
+    const callId: string = ethers.id(rawCallSid);
+    const twilioStatus: string = (body.status || body.CallStatus || "QUEUED").toLowerCase();
 
-    const payloadHex = "0x" + payloadBytes.toString("hex");
+    // Mapping Twilio CallStatus → ton statut métier + opcode
+    let status = "QUEUED";
+    let opcode = Number(body.opcode ?? 1);
+    const msgType = Number(body.msgType ?? 1);
+    const callerHash = BigInt(body.callerHash ?? 0);
+    const calledHash = BigInt(body.calledHash ?? 0);
+    const timestamp = BigInt(body.timestamp ?? Math.floor(Date.now() / 1000));
+    const extra = BigInt(body.extra ?? 0);
+
+    switch (twilioStatus) {
+      case "initiated":
+      case "queued":
+        status = "INITIATED";
+        opcode = 1;
+        break;
+      case "ringing":
+        status = "RINGING";
+        break;
+      case "in-progress":
+      case "answered":
+        status = "ANSWERED";
+        opcode = 1;
+        break;
+      case "completed":
+      case "busy":
+      case "failed":
+      case "no-answer":
+      case "canceled":
+        status = "HANGUP";
+        opcode = 3;
+        break;
+      default:
+        status = twilioStatus.toUpperCase();
+    }
+
+    // Données enrichies depuis Twilio
+    const from = body.From || body.from;
+    const to = body.To || body.to;
+    const duration = body.CallDuration ? Number(body.CallDuration) : 0;
+    const sipUri = body.sipUri || body.SipUri; // venant de twilio-dial-3cx
 
     console.log("══════════════════════════════════════════════════════════════════════");
-    console.log("🔵 CALLBACK UVM → ORACLE (B)");
-    console.log("CallId reçu :", callId);
-    console.log("Status reçu :", status);
+    console.log("🔵 TWILIO → SS7 ORACLE");
+    console.log("Raw CallSid :", rawCallSid);
+    console.log("callId (hashed) :", callId);
+    console.log("Twilio Status :", twilioStatus, "→ Mapped :", status);
+    console.log("From :", from, "| To :", to);
+    if (sipUri) console.log("SIP URI :", sipUri);
     console.log("══════════════════════════════════════════════════════════════════════");
 
-    // 1) Lecture AVANT
+    // 1) Lecture de l'état actuel
     let beforeRaw = await safeRead(callId);
     let before = clean(beforeRaw);
 
     console.log("📘 ÉTAT AVANT :", before);
 
-    // 2) Si l’appel n’existe pas → initiateCall()
+    // 2) Si l'appel n'existe pas encore → initiateCall()
+    const payloadBytes = Buffer.from([]); // Pas de payload SS7 classique avec Twilio
+    const payloadHex = "0x" + payloadBytes.toString("hex");
+
     if (!before?.exists) {
-      console.log("🟦 Appel inconnu → initiateCall() automatique…");
+      console.log("🟦 Appel inconnu → initiateCall() automatique...");
 
       try {
         const tx = await contract.initiateCall(
@@ -104,22 +153,28 @@ export async function POST(req: NextRequest) {
           payloadHex
         );
         console.log("✔ initiateCall() envoyé :", tx.hash);
+        await tx.wait(1); // Optionnel : attendre 1 confirmation
       } catch (e: any) {
         console.log("⚠️ initiateCall() erreur ignorée :", e?.message || e);
       }
 
-      // Relire après création
       beforeRaw = await safeRead(callId);
       before = clean(beforeRaw);
-
       console.log("📘 ÉTAT APRÈS initiateCall :", before);
     }
 
-    // 3) responseData minimal
+    // 3) Préparation des données de résultat
     const responseData = ethers.toUtf8Bytes(
       JSON.stringify({
-        message: "Résultat d'appel traité on-chain",
+        message: "Twilio call processed on-chain",
         callId,
+        rawCallSid,
+        twilioStatus,
+        mappedStatus: status,
+        from,
+        to,
+        duration,
+        sipUri,
         previousStatus: before?.finalStatus ?? null,
         processedAt: new Date().toISOString()
       })
@@ -141,11 +196,11 @@ export async function POST(req: NextRequest) {
       txHash = tx.hash;
       console.log("✔ reportCallResult() envoyé :", tx.hash);
     } catch (e: any) {
-      console.log("⚠️ BUG Ethers ignoré :", e?.message || e);
-      warning = e?.message || "ethers_bug_ignored";
+      console.log("⚠️ reportCallResult() erreur :", e?.message || e);
+      warning = e?.message || "report_error";
     }
 
-    // 5) Lecture APRÈS
+    // 5) Lecture finale
     const afterRaw = await safeRead(callId);
     const after = clean(afterRaw);
 
@@ -154,12 +209,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       callId,
+      rawCallSid,
       status,
       before,
       after,
       txHash,
       warning,
-      message: "Appel traité (initiateCall + reportCallResult)"
+      message: "Appel Twilio traité avec succès"
     });
 
   } catch (err: any) {
