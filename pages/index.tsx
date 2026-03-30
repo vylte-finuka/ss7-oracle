@@ -43,7 +43,7 @@ export default function PSTNPhone() {
   useEffect(() => {
     const ablyKey = process.env.NEXT_PUBLIC_ABLY_API_KEY;
     if (!ablyKey) {
-      console.error("❌ NEXT_PUBLIC_ABLY_API_KEY est manquante !");
+      console.error("❌ NEXT_PUBLIC_ABLY_API_KEY manquante dans les variables d'environnement");
       return;
     }
 
@@ -53,11 +53,13 @@ export default function PSTNPhone() {
     const channel = ably.channels.get('pstn-calls');
     channelRef.current = channel;
 
+    // === Appel entrant ===
     channel.subscribe('incoming-call', (msg) => {
       const { caller, callId } = msg.data;
-      if (caller === myNumber) return;
+      if (caller === myNumber) return; // Ne pas se notifier soi-même
 
-      console.log(`📞 Appel entrant de ${caller}`);
+      console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
+
       const call: CallSession = {
         id: callId,
         caller,
@@ -68,13 +70,14 @@ export default function PSTNPhone() {
         startTime: new Date(),
       };
       setCurrentCall(call);
-      playRingtone(400, 1000);
-      setTimeout(() => playRingtone(450, 1000), 1500);
+      playRingtone(400, 800);
+      setTimeout(() => playRingtone(480, 800), 1000);
     });
 
+    // === Appel décroché ===
     channel.subscribe('call-answered', (msg) => {
       const { callId } = msg.data;
-      console.log(`✅ Appel ${callId} décroché`);
+      console.log(`✅ Signal call-answered reçu pour ${callId}`);
       setCurrentCall(prev => {
         if (prev && prev.id === callId) {
           const updated = { ...prev, status: 'answered' };
@@ -85,9 +88,11 @@ export default function PSTNPhone() {
       });
     });
 
+    // === Raccrocher ===
     channel.subscribe('call-hungup', (msg) => {
       const { callId } = msg.data;
       if (currentCall?.id === callId) {
+        console.log(`📴 Appel terminé`);
         setCurrentCall(null);
         stopAudioCapture();
         stopDurationTimer();
@@ -97,9 +102,9 @@ export default function PSTNPhone() {
     return () => ably.close();
   }, [myNumber]);
 
-  // Timer durée
   const startDurationTimer = () => {
     stopDurationTimer();
+    console.log('⏱️ Timer démarré');
     durationInterval.current = setInterval(() => {
       setCurrentCall(prev => prev && prev.status === 'answered' 
         ? { ...prev, duration: prev.duration + 1 } 
@@ -112,34 +117,20 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Lecture audio - Version finale contre atob + AbortError
+  // Audio sécurisé
   const playAudioFromBase64 = useCallback((input: any) => {
-    if (!playbackAudioRef.current || !input) {
-      console.log('ℹ️ Aucun audio reçu du serveur');
-      return;
-    }
+    if (!playbackAudioRef.current || !input) return;
 
-    let base64 = String(input).trim();
+    let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
 
-    // Nettoyage agressif
-    base64 = base64.replace(/\s+/g, '');
-    base64 = base64.replace(/[^A-Za-z0-9+/=]/g, '');
-
-    if (base64.length < 20) {
-      console.log('⚠️ Base64 trop court après nettoyage');
-      return;
-    }
+    if (base64.length < 20) return;
 
     try {
-      if (playbackAudioRef.current.src.startsWith('blob:')) {
-        URL.revokeObjectURL(playbackAudioRef.current.src);
-      }
+      if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
 
       const binaryString = atob(base64);
       const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
 
       const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
       const url = URL.createObjectURL(blob);
@@ -149,29 +140,20 @@ export default function PSTNPhone() {
       audio.volume = 1.0;
       audio.load();
 
-      audio.play()
-        .then(() => {
-          console.log('🔊 Audio joué avec succès');
-          setShowManualPlay(false);
-        })
-        .catch((err) => {
-          console.warn('Play failed:', err.name);
-          if (err.name === 'AbortError' || err.name === 'NotAllowedError') {
-            setShowManualPlay(true);
-          }
-        });
-
-    } catch (err: any) {
-      console.error('❌ atob échoué:', err.message);
-      console.error('Base64 final essayé:', base64.substring(0, 150) + '...');
+      audio.play().catch(err => {
+        if (err.name === 'AbortError' || err.name === 'NotAllowedError') {
+          setShowManualPlay(true);
+        }
+      });
+    } catch (err) {
+      console.error('❌ Erreur atob:', err.message);
     }
   }, []);
 
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 },
-        video: false,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
 
       mediaStreamRef.current = stream;
@@ -185,30 +167,14 @@ export default function PSTNPhone() {
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
 
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size === 0 || !callId) return;
-
+        if (event.data.size === 0) return;
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1];
-          if (!base64) return;
-
-          try {
-            const response = await dialer.sendAudioData(
-              callId,
-              base64,
-              Date.now(),
-              myNumber,
-              currentCall?.called || targetNumber
-            );
-
+          if (base64) {
+            const response = await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
             const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
-            if (audioBase64) {
-              playAudioFromBase64(audioBase64);
-            } else {
-              console.log('ℹ️ Pas d\'audio dans la réponse Oracle');
-            }
-          } catch (err) {
-            console.error('❌ Erreur envoi audio', err);
+            if (audioBase64) playAudioFromBase64(audioBase64);
           }
         };
         reader.readAsDataURL(event.data);
@@ -226,7 +192,7 @@ export default function PSTNPhone() {
       };
       analyze();
     } catch (err) {
-      console.error('❌ Erreur micro:', err);
+      console.error('❌ Erreur micro', err);
     }
   };
 
@@ -252,7 +218,7 @@ export default function PSTNPhone() {
     } catch {}
   };
 
-  // ==================== ACTIONS ====================
+  // Actions
   const login = () => setStep('phone');
 
   const makeOutboundCall = async () => {
@@ -285,10 +251,7 @@ export default function PSTNPhone() {
   const answerCall = async () => {
     if (!currentCall) return;
     try {
-      await dialer.answerCall(currentCall.id, { 
-        callerNumber: myNumber, 
-        calledNumber: currentCall.caller 
-      });
+      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       channelRef.current?.publish('call-answered', { callId: currentCall.id });
     } catch (e) {
@@ -304,8 +267,11 @@ export default function PSTNPhone() {
   };
 
   const simulateIncomingCall = () => {
+    const callId = 'sim-' + Date.now();
+    console.log(`🔄 Simulation d'appel entrant (ID: ${callId})`);
+
     const call: CallSession = {
-      id: 'in-' + Date.now(),
+      id: callId,
       caller: targetNumber,
       called: myNumber,
       direction: 'inbound',
@@ -337,10 +303,7 @@ export default function PSTNPhone() {
               placeholder="Votre numéro"
             />
 
-            <button
-              onClick={login}
-              className="w-full bg-green-600 hover:bg-green-500 py-5 rounded-2xl text-xl font-bold"
-            >
+            <button onClick={login} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
               Se connecter
             </button>
           </div>
@@ -351,38 +314,20 @@ export default function PSTNPhone() {
                 <p className="text-sm text-gray-400">Connecté en tant que</p>
                 <p className="font-mono text-xl">{myNumber}</p>
               </div>
-              <button 
-                onClick={() => {
-                  setStep('login');
-                  setCurrentCall(null);
-                  stopAudioCapture();
-                }} 
-                className="text-red-400 hover:text-red-300"
-              >
-                Déconnexion
-              </button>
+              <button onClick={() => { setStep('login'); setCurrentCall(null); }} className="text-red-400">Déconnexion</button>
             </div>
 
             {!currentCall ? (
               <div className="space-y-6">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">Appeler ce numéro</label>
-                  <input
-                    type="tel"
-                    value={targetNumber}
-                    onChange={(e) => setTargetNumber(e.target.value)}
-                    className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
-                    placeholder="Numéro à appeler"
-                  />
-                </div>
-
-                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
-                  📞 Appeler
-                </button>
-
-                <button onClick={simulateIncomingCall} className="w-full bg-blue-600 py-5 rounded-3xl text-xl font-bold">
-                  📥 Simuler appel entrant
-                </button>
+                <input
+                  type="tel"
+                  value={targetNumber}
+                  onChange={(e) => setTargetNumber(e.target.value)}
+                  className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
+                  placeholder="Numéro à appeler"
+                />
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
+                <button onClick={simulateIncomingCall} className="w-full bg-blue-600 py-5 rounded-3xl text-xl font-bold">📥 Simuler appel entrant</button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-8">
@@ -411,10 +356,8 @@ export default function PSTNPhone() {
 
                 {showManualPlay && (
                   <button
-                    onClick={() => {
-                      playbackAudioRef.current?.play().then(() => setShowManualPlay(false));
-                    }}
-                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mt-4 mb-4"
+                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))}
+                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
                   >
                     ▶️ Jouer l'audio manuellement
                   </button>
@@ -426,7 +369,6 @@ export default function PSTNPhone() {
                       ✅ Décrocher
                     </button>
                   )}
-
                   <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
                     📴 Raccrocher
                   </button>
