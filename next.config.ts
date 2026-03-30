@@ -10,11 +10,15 @@ const nextConfig = {
   async headers() {
     const cspHeader = `
       default-src 'self';
-      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.ably.com;
       style-src 'self' 'unsafe-inline';
       img-src 'self' blob: data:;
       font-src 'self';
-      connect-src 'self' https://*.netlify.app wss://*.netlify.app;
+      connect-src 'self' 
+                 https://*.ably.com 
+                 wss://*.ably.com 
+                 wss://main.realtime.ably.net 
+                 https://internet-up.ably-realtime.com;
       media-src 'self' blob:;
       object-src 'none';
       base-uri 'self';
