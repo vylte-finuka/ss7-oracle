@@ -21,6 +21,7 @@ export default function PSTNPhone() {
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [showManualPlay, setShowManualPlay] = useState(false);
 
   const ablyRef = useRef<Ably.Realtime | null>(null);
   const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
@@ -96,7 +97,7 @@ export default function PSTNPhone() {
     return () => ably.close();
   }, [myNumber]);
 
-  // Timer
+  // Timer durée
   const startDurationTimer = () => {
     stopDurationTimer();
     durationInterval.current = setInterval(() => {
@@ -111,65 +112,66 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-// Remplace uniquement cette fonction dans ton code
-const playAudioFromBase64 = useCallback((input: any) => {
-  if (!playbackAudioRef.current || !input) {
-    console.log('ℹ️ Aucun audio reçu du serveur');
-    return;
-  }
-
-  let base64 = String(input).trim();
-
-  // Nettoyage agressif
-  base64 = base64.replace(/\s+/g, '');           // Supprime tous les espaces, retours à la ligne
-  base64 = base64.replace(/[^A-Za-z0-9+/=]/g, ''); // Garde uniquement les caractères valides base64
-
-  if (base64.length < 20) {
-    console.log('⚠️ Base64 trop court après nettoyage');
-    console.log('Base64 reçu (début):', base64.substring(0, 100));
-    return;
-  }
-
-  try {
-    // Vérification finale avant atob
-    if (!/^[A-Za-z0-9+/=]+$/.test(base64)) {
-      console.error('❌ Caractères invalides dans le base64');
+  // Lecture audio - Version finale contre atob + AbortError
+  const playAudioFromBase64 = useCallback((input: any) => {
+    if (!playbackAudioRef.current || !input) {
+      console.log('ℹ️ Aucun audio reçu du serveur');
       return;
     }
 
-    if (playbackAudioRef.current.src.startsWith('blob:')) {
-      URL.revokeObjectURL(playbackAudioRef.current.src);
+    let base64 = String(input).trim();
+
+    // Nettoyage agressif
+    base64 = base64.replace(/\s+/g, '');
+    base64 = base64.replace(/[^A-Za-z0-9+/=]/g, '');
+
+    if (base64.length < 20) {
+      console.log('⚠️ Base64 trop court après nettoyage');
+      return;
     }
 
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    try {
+      if (playbackAudioRef.current.src.startsWith('blob:')) {
+        URL.revokeObjectURL(playbackAudioRef.current.src);
+      }
+
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
+      const url = URL.createObjectURL(blob);
+
+      const audio = playbackAudioRef.current;
+      audio.src = url;
+      audio.volume = 1.0;
+      audio.load();
+
+      audio.play()
+        .then(() => {
+          console.log('🔊 Audio joué avec succès');
+          setShowManualPlay(false);
+        })
+        .catch((err) => {
+          console.warn('Play failed:', err.name);
+          if (err.name === 'AbortError' || err.name === 'NotAllowedError') {
+            setShowManualPlay(true);
+          }
+        });
+
+    } catch (err: any) {
+      console.error('❌ atob échoué:', err.message);
+      console.error('Base64 final essayé:', base64.substring(0, 150) + '...');
     }
+  }, []);
 
-    const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
-    const url = URL.createObjectURL(blob);
-
-    const audio = playbackAudioRef.current;
-    audio.src = url;
-    audio.volume = 1.0;
-    audio.load();
-
-    audio.play()
-      .then(() => console.log('🔊 Audio joué avec succès'))
-      .catch(err => console.error('Play failed:', err.name));
-
-  } catch (err: any) {
-    console.error('❌ atob échoué après nettoyage:', err.message);
-    console.error('Base64 final essayé:', base64.substring(0, 150) + '...');
-  }
-}, []);
-
-  // Capture micro + envoi
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 },
+        video: false,
       });
 
       mediaStreamRef.current = stream;
@@ -183,7 +185,7 @@ const playAudioFromBase64 = useCallback((input: any) => {
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
 
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size === 0) return;
+        if (event.data.size === 0 || !callId) return;
 
         const reader = new FileReader();
         reader.onloadend = async () => {
@@ -192,7 +194,11 @@ const playAudioFromBase64 = useCallback((input: any) => {
 
           try {
             const response = await dialer.sendAudioData(
-              callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber
+              callId,
+              base64,
+              Date.now(),
+              myNumber,
+              currentCall?.called || targetNumber
             );
 
             const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
@@ -220,7 +226,7 @@ const playAudioFromBase64 = useCallback((input: any) => {
       };
       analyze();
     } catch (err) {
-      console.error('❌ Erreur micro', err);
+      console.error('❌ Erreur micro:', err);
     }
   };
 
@@ -246,7 +252,7 @@ const playAudioFromBase64 = useCallback((input: any) => {
     } catch {}
   };
 
-  // Actions
+  // ==================== ACTIONS ====================
   const login = () => setStep('phone');
 
   const makeOutboundCall = async () => {
@@ -279,7 +285,10 @@ const playAudioFromBase64 = useCallback((input: any) => {
   const answerCall = async () => {
     if (!currentCall) return;
     try {
-      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
+      await dialer.answerCall(currentCall.id, { 
+        callerNumber: myNumber, 
+        calledNumber: currentCall.caller 
+      });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       channelRef.current?.publish('call-answered', { callId: currentCall.id });
     } catch (e) {
@@ -328,7 +337,10 @@ const playAudioFromBase64 = useCallback((input: any) => {
               placeholder="Votre numéro"
             />
 
-            <button onClick={login} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
+            <button
+              onClick={login}
+              className="w-full bg-green-600 hover:bg-green-500 py-5 rounded-2xl text-xl font-bold"
+            >
               Se connecter
             </button>
           </div>
@@ -339,50 +351,73 @@ const playAudioFromBase64 = useCallback((input: any) => {
                 <p className="text-sm text-gray-400">Connecté en tant que</p>
                 <p className="font-mono text-xl">{myNumber}</p>
               </div>
-              <button onClick={() => { setStep('login'); setCurrentCall(null); }} className="text-red-400">
+              <button 
+                onClick={() => {
+                  setStep('login');
+                  setCurrentCall(null);
+                  stopAudioCapture();
+                }} 
+                className="text-red-400 hover:text-red-300"
+              >
                 Déconnexion
               </button>
             </div>
 
             {!currentCall ? (
               <div className="space-y-6">
-                <input
-                  type="tel"
-                  value={targetNumber}
-                  onChange={(e) => setTargetNumber(e.target.value)}
-                  className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
-                  placeholder="Numéro à appeler"
-                />
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Appeler ce numéro</label>
+                  <input
+                    type="tel"
+                    value={targetNumber}
+                    onChange={(e) => setTargetNumber(e.target.value)}
+                    className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
+                    placeholder="Numéro à appeler"
+                  />
+                </div>
+
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
                   📞 Appeler
                 </button>
+
                 <button onClick={simulateIncomingCall} className="w-full bg-blue-600 py-5 rounded-3xl text-xl font-bold">
                   📥 Simuler appel entrant
                 </button>
               </div>
             ) : (
-              <div className="bg-white/10 rounded-3xl p-8 text-center">
-                <p className="text-3xl font-mono mb-6">
+              <div className="bg-white/10 rounded-3xl p-8">
+                <p className="text-center text-3xl font-mono mb-6">
                   {currentCall.direction === 'outbound' ? 'Vers' : 'De'} {currentCall.called || currentCall.caller}
                 </p>
 
-                <p className="text-2xl mb-8 font-semibold">
+                <p className="text-center text-2xl mb-8 font-semibold">
                   {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
                 </p>
 
                 {currentCall.status === 'answered' && (
-                  <p className="text-5xl font-mono text-green-400 mb-10">
+                  <p className="text-center text-5xl font-mono text-green-400 mb-10">
                     {Math.floor(currentCall.duration / 60)}:{(currentCall.duration % 60).toString().padStart(2, '0')}
                   </p>
                 )}
 
                 {isRecording && (
                   <div className="mb-8">
-                    <p className="text-gray-400 mb-2">Niveau micro</p>
+                    <p className="text-center text-gray-400 mb-2">Niveau micro</p>
                     <div className="h-4 bg-gray-700 rounded-full overflow-hidden">
                       <div className="bg-green-500 h-full transition-all" style={{ width: `${Math.min(audioLevel / 2.55, 100)}%` }} />
                     </div>
                   </div>
+                )}
+
+                {showManualPlay && (
+                  <button
+                    onClick={() => {
+                      playbackAudioRef.current?.play().then(() => setShowManualPlay(false));
+                    }}
+                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mt-4 mb-4"
+                  >
+                    ▶️ Jouer l'audio manuellement
+                  </button>
                 )}
 
                 <div className="space-y-4">
@@ -391,6 +426,7 @@ const playAudioFromBase64 = useCallback((input: any) => {
                       ✅ Décrocher
                     </button>
                   )}
+
                   <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
                     📴 Raccrocher
                   </button>
