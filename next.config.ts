@@ -6,6 +6,42 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+
+  async headers() {
+    const isDev = process.env.NODE_ENV === 'development';
+
+    const cspHeader = `
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ''};
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' blob: data:;
+      font-src 'self';
+      connect-src 'self' 
+                 *.ably.com 
+                 wss://*.ably.com 
+                 https://*.ably.com 
+                 ws://localhost:* 
+                 http://localhost:*;
+      media-src 'self' blob:;
+      object-src 'none';
+      base-uri 'self';
+      form-action 'self';
+      frame-ancestors 'none';
+      upgrade-insecure-requests;
+    `.replace(/\s+/g, ' ').trim();
+
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: cspHeader,
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
