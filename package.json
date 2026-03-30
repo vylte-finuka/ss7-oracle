@@ -6,21 +6,33 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "dialer:voice": "tsx cli/dialer.ts --voice",
+    "dialer:sms": "tsx cli/dialer.ts --sms",
+    "dialer:batch": "tsx cli/dialer.ts --batch",
+    "dialer": "tsx cli/dialer.ts"
   },
   "dependencies": {
+    "dotenv": "^17.3.1",
     "ethers": "^6.16.0",
+    "fluent-ffmpeg": "^2.1.3",
     "next": "16.1.7",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "twilio": "^5.13.1"
   },
   "devDependencies": {
+    "@types/fluent-ffmpeg": "^2.1.28",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "axios": "^1.14.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.7",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
