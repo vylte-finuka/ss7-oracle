@@ -8,20 +8,13 @@ const nextConfig = {
   },
 
   async headers() {
-    const isDev = process.env.NODE_ENV === 'development';
-
     const cspHeader = `
       default-src 'self';
-      script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ''};
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
       style-src 'self' 'unsafe-inline';
       img-src 'self' blob: data:;
       font-src 'self';
-      connect-src 'self' 
-                 *.ably.com 
-                 wss://*.ably.com 
-                 https://*.ably.com 
-                 ws://localhost:* 
-                 http://localhost:*;
+      connect-src 'self' https://*.netlify.app wss://*.netlify.app;
       media-src 'self' blob:;
       object-src 'none';
       base-uri 'self';
