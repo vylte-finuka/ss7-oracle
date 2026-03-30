@@ -111,49 +111,59 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Lecture audio avec protection maximale contre atob
-  const playAudioFromBase64 = useCallback((input: any) => {
-    if (!playbackAudioRef.current || !input) {
-      console.log('ℹ️ Aucun audio reçu du serveur');
+// Remplace uniquement cette fonction dans ton code
+const playAudioFromBase64 = useCallback((input: any) => {
+  if (!playbackAudioRef.current || !input) {
+    console.log('ℹ️ Aucun audio reçu du serveur');
+    return;
+  }
+
+  let base64 = String(input).trim();
+
+  // Nettoyage agressif
+  base64 = base64.replace(/\s+/g, '');           // Supprime tous les espaces, retours à la ligne
+  base64 = base64.replace(/[^A-Za-z0-9+/=]/g, ''); // Garde uniquement les caractères valides base64
+
+  if (base64.length < 20) {
+    console.log('⚠️ Base64 trop court après nettoyage');
+    console.log('Base64 reçu (début):', base64.substring(0, 100));
+    return;
+  }
+
+  try {
+    // Vérification finale avant atob
+    if (!/^[A-Za-z0-9+/=]+$/.test(base64)) {
+      console.error('❌ Caractères invalides dans le base64');
       return;
     }
 
-    let base64 = String(input).trim();
-
-    // Nettoyage agressif
-    if (base64.startsWith('data:')) base64 = base64.split(',')[1] || base64;
-    if (base64.includes(' ')) base64 = base64.replace(/\s+/g, '');
-    if (!base64 || base64.length < 20) {
-      console.log('⚠️ Base64 invalide ou trop court');
-      return;
+    if (playbackAudioRef.current.src.startsWith('blob:')) {
+      URL.revokeObjectURL(playbackAudioRef.current.src);
     }
 
-    try {
-      if (playbackAudioRef.current.src.startsWith('blob:')) {
-        URL.revokeObjectURL(playbackAudioRef.current.src);
-      }
-
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
-      const url = URL.createObjectURL(blob);
-
-      const audio = playbackAudioRef.current;
-      audio.src = url;
-      audio.volume = 1.0;
-      audio.load();
-      audio.play().catch(err => console.error('Play failed:', err));
-      
-      console.log('🔊 Audio joué avec succès');
-    } catch (err: any) {
-      console.error('❌ atob échoué:', err.message);
-      console.error('Base64 reçu (début):', base64.substring(0, 100));
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
-  }, []);
+
+    const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
+    const url = URL.createObjectURL(blob);
+
+    const audio = playbackAudioRef.current;
+    audio.src = url;
+    audio.volume = 1.0;
+    audio.load();
+
+    audio.play()
+      .then(() => console.log('🔊 Audio joué avec succès'))
+      .catch(err => console.error('Play failed:', err.name));
+
+  } catch (err: any) {
+    console.error('❌ atob échoué après nettoyage:', err.message);
+    console.error('Base64 final essayé:', base64.substring(0, 150) + '...');
+  }
+}, []);
 
   // Capture micro + envoi
   const startAudioCapture = async (callId: string) => {
