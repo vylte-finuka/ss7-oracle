@@ -1,38 +1,34 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { callId: string } }
+  context: { params: Promise<{ callId: string }> }
 ) {
   try {
-    const { audioData, sequenceNumber, timestamp } = await request.json();
-    const callId = params.callId;
+    // Next.js 15+ : params est maintenant un Promise
+    const { callId } = await context.params;
 
-    console.log(`📞 Audio reçu pour l'appel: ${callId}`);
-    console.log(`📊 Séquence: ${sequenceNumber}`);
-    console.log(`📏 Taille: ${audioData.length} caractères base64`);
-    console.log(`⏰ Timestamp: ${timestamp}`);
+    const body = await request.json();
 
-    // ✅ ECHO : Retourner le même audio pour entendre votre voix
-    // (Ou vous pouvez générer un ton différent ici)
-    const echoAudioData = audioData;
-
-    return NextResponse.json({
-      data: {
-        success: true,
-        callId,
-        sequenceNumber,
-        audioData: echoAudioData, // 🔊 RETOURNER L'AUDIO AU CLIENT
-        blockchain: {
-          txHashAudio: `0x${Math.random().toString(16).slice(2)}`
-        }
-      }
+    console.log(`📥 Audio reçu pour callId: ${callId}`, {
+      size: body.audioData ? Math.round(body.audioData.length / 1.33) + ' chars' : 'no audio',
     });
 
-  } catch (error) {
-    console.error('❌ Erreur audio:', error);
+    // Ici tu peux traiter l'audio si tu veux (enregistrer, diffuser, etc.)
+    // Pour l'instant on renvoie simplement un succès
+
+    return NextResponse.json({
+      success: true,
+      message: 'Audio reçu avec succès',
+      callId,
+      receivedAt: new Date().toISOString(),
+    });
+
+  } catch (error: any) {
+    console.error('❌ Erreur dans route audio:', error);
     return NextResponse.json(
-      { error: 'Erreur traitement audio' },
+      { success: false, error: error.message },
       { status: 500 }
     );
   }
