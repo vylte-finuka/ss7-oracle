@@ -49,19 +49,32 @@ export default function PSTNPhone() {
         const res = await dialer.checkIncomingCalls(myNumber);
 
         if (res?.success && res?.data) {
-          const data = res.data;
-          const callInfo = data.call || data; // ton Oracle met parfois les infos directement dans data
+          const d = res.data;
+          // Extraction très robuste selon la structure réelle de ton Oracle
+          let caller = 'unknown';
+          let callId = `in-${Date.now()}`;
+          let status = '';
 
-          const caller = callInfo?.caller || callInfo?.callerNumber || 'unknown';
-          const callId = callInfo?.callId || data.callId || `in-${Date.now()}`;
-          const status = callInfo?.status || data.status;
+          // Essayer plusieurs chemins possibles dans la réponse
+          if (d.call && d.call.caller) caller = d.call.caller;
+          else if (d.caller) caller = d.caller;
+          else if (d.call && d.call.callerNumber) caller = d.call.callerNumber;
+          else if (d.callerNumber) caller = d.callerNumber;
 
-          if (caller !== 'unknown' && caller !== myNumber && status === 'INITIATED' && !currentCall) {
-            console.log(`📥 APPEL ENTRANT RÉEL DÉTECTÉ via Oracle ! Caller: ${caller} | CallId: ${callId}`);
+          if (d.callId) callId = d.callId;
+          else if (d.call && d.call.callId) callId = d.call.callId;
+
+          if (d.call && d.call.status) status = d.call.status;
+          else if (d.status) status = d.status;
+
+          console.log(`📊 Données extraites - Caller: ${caller} | CallId: ${callId} | Status: ${status}`);
+
+          if (caller !== 'unknown' && caller !== myNumber && (status === 'INITIATED' || !status) && !currentCall) {
+            console.log(`✅ APPEL ENTRANT RÉEL DÉTECTÉ ! Caller: ${caller} | CallId: ${callId}`);
 
             const incomingCall: CallSession = {
               id: callId,
-              caller: caller,
+              caller,
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -72,12 +85,12 @@ export default function PSTNPhone() {
             setCurrentCall(incomingCall);
             playRingtone(400, 800);
             setTimeout(() => playRingtone(480, 1000), 1200);
-          } else if (caller === 'unknown') {
-            console.log('⚠️ Réponse Oracle reçue mais caller manquant ou invalide');
+          } else {
+            console.log(`⚠️ Pas d'appel entrant valide cette fois (caller: ${caller})`);
           }
         }
       } catch (err: any) {
-        console.error('Erreur lors du polling Oracle:', err.message || err);
+        console.error('Erreur polling Oracle:', err.message || err);
       }
     }, 5000);
 
@@ -130,9 +143,7 @@ export default function PSTNPhone() {
 
   const startAudioCapture = async (callId: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       mediaStreamRef.current = stream;
       console.log('✅ Microphone activé');
 
