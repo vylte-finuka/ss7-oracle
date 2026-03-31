@@ -36,27 +36,53 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // Polling toutes les 5 secondes (persistance comme un vrai PSTN)
+  // ==================== VRAI POLLING ORACLE (toutes les 5s) ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
-    console.log(`🔄 Démarrage polling PSTN toutes les 5s pour ${myNumber}`);
+    console.log(`🔄 VRAI polling Oracle activé toutes les 5s pour ${myNumber}`);
 
     pollingInterval.current = setInterval(async () => {
-      console.log(`🔍 Vérification appels entrants pour ${myNumber}...`);
-      // Ici tu peux appeler ton backend pour vérifier les appels en attente
-      // Exemple : await checkIncomingCallsFromBackend();
+      try {
+        console.log(`🔍 Vérification réelle des appels entrants pour ${myNumber}...`);
+
+        // === APPEL RÉEL À TON ORACLE ===
+        const res = await dialer.checkIncomingCalls(myNumber);   // ← méthode à ajouter dans PSTNDialer
+
+        if (res?.success && res?.data?.call && !currentCall) {
+          const inc = res.data.call;
+
+          if (inc.caller && inc.caller !== myNumber && inc.status === 'INITIATED') {
+            console.log(`📥 APPEL ENTRANT RÉEL DÉTECTÉ via Oracle ! Caller: ${inc.caller} | CallId: ${inc.callId}`);
+
+            const incomingCall: CallSession = {
+              id: inc.callId || `in-${Date.now()}`,
+              caller: inc.caller,
+              called: myNumber,
+              direction: 'inbound',
+              status: 'ringing',
+              duration: 0,
+              startTime: new Date(),
+            };
+
+            setCurrentCall(incomingCall);
+            playRingtone(400, 800);
+            setTimeout(() => playRingtone(480, 1000), 1200);
+          }
+        }
+      } catch (err: any) {
+        console.error('Erreur lors du polling Oracle:', err.message || err);
+      }
     }, 5000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber]);
+  }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
-    console.log('⏱️ Timer démarré');
     durationInterval.current = setInterval(() => {
       setCurrentCall(prev => prev && prev.status === 'answered' 
         ? { ...prev, duration: prev.duration + 1 } 
@@ -69,12 +95,10 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio sécurisé
+  // Audio (identique à avant)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
-
     let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-
     if (base64.length < 20) return;
 
     try {
@@ -91,7 +115,6 @@ export default function PSTNPhone() {
       audio.src = url;
       audio.volume = 1.0;
       audio.load();
-
       audio.play().catch(err => {
         if (err.name === 'AbortError' || err.name === 'NotAllowedError') setShowManualPlay(true);
       });
@@ -105,7 +128,6 @@ export default function PSTNPhone() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
-
       mediaStreamRef.current = stream;
       console.log('✅ Microphone activé');
 
@@ -118,7 +140,6 @@ export default function PSTNPhone() {
 
       mediaRecorderRef.current.ondataavailable = async (event) => {
         if (event.data.size === 0 || !callId) return;
-
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1];
@@ -174,7 +195,6 @@ export default function PSTNPhone() {
 
   const makeOutboundCall = async () => {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
-
     try {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       let callId = res.data?.callId || `call-${Date.now()}`;
@@ -227,7 +247,6 @@ export default function PSTNPhone() {
             <div className="text-7xl mb-8">☎️</div>
             <h1 className="text-4xl font-bold mb-3">PSTN Dialer</h1>
             <p className="text-gray-300 mb-10">Entrez votre numéro</p>
-
             <input
               type="tel"
               value={myNumber}
@@ -235,7 +254,6 @@ export default function PSTNPhone() {
               className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center mb-8"
               placeholder="Votre numéro"
             />
-
             <button onClick={login} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
               Se connecter
             </button>
@@ -262,7 +280,6 @@ export default function PSTNPhone() {
                     placeholder="Numéro distant"
                   />
                 </div>
-
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
                   📞 Appeler ce numéro
                 </button>
@@ -272,7 +289,6 @@ export default function PSTNPhone() {
                 <p className="text-center text-3xl font-mono mb-6">
                   {currentCall.direction === 'outbound' ? 'Vers' : 'De'} {currentCall.called || currentCall.caller}
                 </p>
-
                 <p className="text-center text-2xl mb-8 font-semibold">
                   {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
                 </p>
@@ -293,10 +309,7 @@ export default function PSTNPhone() {
                 )}
 
                 {showManualPlay && (
-                  <button
-                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))}
-                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
-                  >
+                  <button onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4">
                     ▶️ Jouer l'audio manuellement
                   </button>
                 )}
