@@ -39,7 +39,7 @@ export default function PSTNPhone() {
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  // ==================== ABLY ====================
+  // ==================== ABLY avec polling permanent ====================
   useEffect(() => {
     const ablyKey = process.env.NEXT_PUBLIC_ABLY_API_KEY;
     if (!ablyKey) {
@@ -47,22 +47,31 @@ export default function PSTNPhone() {
       return;
     }
 
-    const ably = new Ably.Realtime({ 
-      key: ablyKey, 
-      clientId: myNumber 
+    const ably = new Ably.Realtime({
+      key: ablyKey,
+      clientId: myNumber,
+      // Options pour un comportement plus "permanent" comme Socket.io
+      useBinaryProtocol: false,
+      recover: true,
+      transportParams: { heartbeat: '30000' }, // Heartbeat toutes les 30s
+      disconnectedRetryTimeout: 15000,
+      suspendedRetryTimeout: 30000,
     });
+
     ablyRef.current = ably;
 
-    // Canal unique et clair
+    ably.connection.on('connected', () => console.log('✅ Ably connecté (permanent)'));
+    ably.connection.on('disconnected', () => console.log('⚠️ Ably déconnecté'));
+    ably.connection.on('suspended', () => console.log('⚠️ Ably en mode suspended'));
+
     const channel = ably.channels.get('pstn-calls');
     channelRef.current = channel;
 
     console.log(`🔗 Abonné au canal pstn-calls avec numéro ${myNumber}`);
 
-    // Appel entrant
     channel.subscribe('incoming-call', (msg) => {
       const { caller, callId } = msg.data;
-      if (caller === myNumber) return; // Évite boucle
+      if (caller === myNumber) return;
 
       console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
 
@@ -80,10 +89,9 @@ export default function PSTNPhone() {
       setTimeout(() => playRingtone(480, 800), 1000);
     });
 
-    // Appel décroché
     channel.subscribe('call-answered', (msg) => {
       const { callId } = msg.data;
-      console.log(`✅ Appel décroché : ${callId}`);
+      console.log(`✅ Signal call-answered reçu pour ${callId}`);
       setCurrentCall(prev => {
         if (prev && prev.id === callId) {
           const updated = { ...prev, status: 'answered' };
@@ -94,7 +102,6 @@ export default function PSTNPhone() {
       });
     });
 
-    // Raccrocher
     channel.subscribe('call-hungup', (msg) => {
       const { callId } = msg.data;
       if (currentCall?.id === callId) {
@@ -112,8 +119,8 @@ export default function PSTNPhone() {
     stopDurationTimer();
     console.log('⏱️ Timer démarré');
     durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => prev && prev.status === 'answered' 
-        ? { ...prev, duration: prev.duration + 1 } 
+      setCurrentCall(prev => prev && prev.status === 'answered'
+        ? { ...prev, duration: prev.duration + 1 }
         : prev
       );
     }, 1000);
@@ -123,7 +130,7 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio
+  // Audio sécurisé
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
 
@@ -233,12 +240,11 @@ export default function PSTNPhone() {
     } catch {}
   };
 
-  // ==================== ACTIONS ====================
+  // Actions
   const login = () => setStep('phone');
 
   const makeOutboundCall = async () => {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
-
     try {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       let callId = res.data?.callId || `call-${Date.now()}`;
@@ -256,30 +262,20 @@ export default function PSTNPhone() {
       };
       setCurrentCall(call);
 
-      // Publication Ably
-      channelRef.current?.publish('call', { 
-        caller: myNumber, 
-        called: targetNumber, 
-        callId 
-      });
+      channelRef.current?.publish('call', { caller: myNumber, called: targetNumber, callId });
 
       await startAudioCapture(callId);
       playRingtone(440, 1000);
       setTimeout(() => playRingtone(480, 1000), 1500);
-
     } catch (e: any) {
-      alert(e.message || "Erreur lors de l'appel");
+      alert(e.message);
     }
   };
 
   const answerCall = async () => {
     if (!currentCall) return;
     try {
-      await dialer.answerCall(currentCall.id, { 
-        callerNumber: myNumber, 
-        calledNumber: currentCall.caller 
-      });
-
+      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       channelRef.current?.publish('call-answered', { callId: currentCall.id });
     } catch (e) {
@@ -290,15 +286,13 @@ export default function PSTNPhone() {
   const hangupCall = () => {
     stopAudioCapture();
     stopDurationTimer();
-    if (currentCall) {
-      channelRef.current?.publish('call-hungup', { callId: currentCall.id });
-    }
+    channelRef.current?.publish('call-hungup', { callId: currentCall?.id });
     setCurrentCall(null);
   };
 
   const simulateIncomingCall = () => {
     const callId = 'sim-' + Date.now();
-    console.log(`🔄 Simulation appel entrant (ID: ${callId})`);
+    console.log(`🔄 Simulation d'appel entrant (ID: ${callId})`);
 
     const call: CallSession = {
       id: callId,
