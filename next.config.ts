@@ -14,13 +14,7 @@ const nextConfig = {
       style-src 'self' 'unsafe-inline';
       img-src 'self' blob: data:;
       font-src 'self';
-      connect-src 'self' 
-                 https://*.ably.com 
-                 wss://*.ably.com 
-                 wss://main.realtime.ably.net 
-                 wss://ws-up.ably-realtime.com 
-                 https://internet-up.ably-realtime.com 
-                 *;
+      connect-src 'self' *;
       media-src 'self' blob:;
       object-src 'none';
       base-uri 'self';
