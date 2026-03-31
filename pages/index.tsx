@@ -40,7 +40,7 @@ export default function PSTNPhone() {
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  // ==================== ABLY + POLLING 5 secondes ====================
+  // ==================== ABLY + POLLING 5s ====================
   useEffect(() => {
     const ablyKey = process.env.NEXT_PUBLIC_ABLY_API_KEY;
     if (!ablyKey) {
@@ -48,53 +48,38 @@ export default function PSTNPhone() {
       return;
     }
 
-    const ably = new Ably.Realtime({ key: ablyKey, clientId: myNumber });
+    const ably = new Ably.Realtime({ 
+      key: ablyKey, 
+      clientId: myNumber,
+      recover: true 
+    });
     ablyRef.current = ably;
 
     const channel = ably.channels.get('pstn-calls');
     channelRef.current = channel;
 
-    // Push Ably (réel)
+    // Push Ably
     channel.subscribe('incoming-call', (msg) => {
       const { caller, callId } = msg.data;
       if (caller === myNumber) return;
 
-      console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
-      const call: CallSession = {
-        id: callId,
-        caller,
-        called: myNumber,
-        direction: 'inbound',
-        status: 'ringing',
-        duration: 0,
-        startTime: new Date(),
-      };
-      setCurrentCall(call);
-      playRingtone(400, 800);
-      setTimeout(() => playRingtone(480, 800), 1000);
+      console.log(`📥 APPEL ENTRANT REÇU via Ably de ${caller}`);
+      handleIncomingCall(caller, callId);
     });
 
     channel.subscribe('call-answered', (msg) => {
       const { callId } = msg.data;
-      console.log(`✅ Appel décroché : ${callId}`);
+      console.log(`✅ Appel décroché via Ably`);
       setCurrentCall(prev => prev && prev.id === callId ? { ...prev, status: 'answered' } : prev);
       startDurationTimer();
     });
 
-    channel.subscribe('call-hungup', (msg) => {
-      if (currentCall?.id === msg.data.callId) {
-        setCurrentCall(null);
-        stopAudioCapture();
-        stopDurationTimer();
-      }
-    });
-
-    // Polling toutes les 5 secondes (vérification réelle comme un opérateur PSTN)
+    // Polling toutes les 5 secondes (vérification comme un vrai PSTN)
     pollingInterval.current = setInterval(() => {
       if (step === 'phone' && myNumber) {
         console.log(`🔄 Polling PSTN (5s) - Vérification appels entrants pour ${myNumber}`);
-        // Ici tu peux appeler ton backend Oracle pour vérifier les appels en attente si tu veux
-        // Pour l'instant on laisse Ably gérer le push
+        // Ici tu peux appeler ton backend pour vérifier les appels en attente si tu veux
+        // Pour l'instant on utilise Ably + simulation manuelle
       }
     }, 5000);
 
@@ -104,6 +89,21 @@ export default function PSTNPhone() {
       stopDurationTimer();
     };
   }, [myNumber, step]);
+
+  const handleIncomingCall = (caller: string, callId: string) => {
+    const call: CallSession = {
+      id: callId,
+      caller,
+      called: myNumber,
+      direction: 'inbound',
+      status: 'ringing',
+      duration: 0,
+      startTime: new Date(),
+    };
+    setCurrentCall(call);
+    playRingtone(400, 800);
+    setTimeout(() => playRingtone(480, 800), 1000);
+  };
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -120,7 +120,7 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio sécurisé
+  // Audio (inchangé)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
 
@@ -174,13 +174,9 @@ export default function PSTNPhone() {
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1];
           if (base64) {
-            try {
-              const response = await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
-              const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
-              if (audioBase64) playAudioFromBase64(audioBase64);
-            } catch (e) {
-              console.error('Erreur envoi audio', e);
-            }
+            const response = await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
+            const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
+            if (audioBase64) playAudioFromBase64(audioBase64);
           }
         };
         reader.readAsDataURL(event.data);
@@ -274,7 +270,7 @@ export default function PSTNPhone() {
     setCurrentCall(null);
   };
 
-  // Simulation manuelle seulement (pas automatique)
+  // Simulation manuelle seulement
   const simulateIncomingCall = () => {
     const callId = 'sim-' + Date.now();
     console.log(`🔄 Simulation manuelle d'appel entrant (ID: ${callId})`);
