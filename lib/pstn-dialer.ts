@@ -25,7 +25,7 @@ export default class PSTNDialer {
   private config: DialerConfig;
 
   constructor(config: DialerConfig) {
-    this.config = { timeout: 30000, ...config };
+    this.config = { timeout: 60000, ...config };
     this.client = axios.create({
       baseURL: this.config.baseUrl,
       timeout: this.config.timeout,
@@ -100,7 +100,7 @@ export default class PSTNDialer {
   }
 
   /**
-   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS (utilisé par le polling)
+   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS (polling)
    */
   async checkIncomingCalls(calledNumber: string) {
     const request: CallRequest = {
@@ -110,11 +110,11 @@ export default class PSTNDialer {
       timestamp: Math.floor(Date.now() / 1000),
     };
 
-    console.log(`🔍 [checkIncomingCalls] Requête pour numéro appelé: ${calledNumber}`);
-    
+    console.log(`🔍 [checkIncomingCalls] Requête pour ${calledNumber}`);
+
     try {
       const response = await this.sendCall(request);
-      console.log(`✅ [checkIncomingCalls] Réponse Oracle:`, response);
+      console.log(`✅ [checkIncomingCalls] Réponse complète:`, JSON.stringify(response, null, 2));
       return response;
     } catch (error: any) {
       console.error(`❌ [checkIncomingCalls] Erreur:`, error.response?.data || error.message);
