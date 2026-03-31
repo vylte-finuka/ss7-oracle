@@ -18,6 +18,7 @@ const nextConfig = {
                  https://*.ably.com 
                  wss://*.ably.com 
                  wss://main.realtime.ably.net 
+                 wss://ws-up.ably-realtime.com 
                  https://internet-up.ably-realtime.com;
       media-src 'self' blob:;
       object-src 'none';
