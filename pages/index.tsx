@@ -54,15 +54,29 @@ export default function PSTNPhone() {
     const channel = ably.channels.get('pstn-calls');
     channelRef.current = channel;
 
-    // Ably en push (normal)
+    // Push Ably (réel)
     channel.subscribe('incoming-call', (msg) => {
       const { caller, callId } = msg.data;
       if (caller === myNumber) return;
-      handleIncomingCall(caller, callId);
+
+      console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
+      const call: CallSession = {
+        id: callId,
+        caller,
+        called: myNumber,
+        direction: 'inbound',
+        status: 'ringing',
+        duration: 0,
+        startTime: new Date(),
+      };
+      setCurrentCall(call);
+      playRingtone(400, 800);
+      setTimeout(() => playRingtone(480, 800), 1000);
     });
 
     channel.subscribe('call-answered', (msg) => {
       const { callId } = msg.data;
+      console.log(`✅ Appel décroché : ${callId}`);
       setCurrentCall(prev => prev && prev.id === callId ? { ...prev, status: 'answered' } : prev);
       startDurationTimer();
     });
@@ -75,13 +89,12 @@ export default function PSTNPhone() {
       }
     });
 
-    // === POLLING toutes les 5 secondes (comme un vrai PSTN) ===
+    // Polling toutes les 5 secondes (vérification réelle comme un opérateur PSTN)
     pollingInterval.current = setInterval(() => {
       if (step === 'phone' && myNumber) {
-        console.log(`🔄 Polling PSTN (toutes les 5s) pour ${myNumber}`);
-        // Ici tu peux appeler ton backend pour vérifier les appels entrants si besoin
-        // Pour l'instant on simule
-        simulateIncomingCallIfNeeded();
+        console.log(`🔄 Polling PSTN (5s) - Vérification appels entrants pour ${myNumber}`);
+        // Ici tu peux appeler ton backend Oracle pour vérifier les appels en attente si tu veux
+        // Pour l'instant on laisse Ably gérer le push
       }
     }, 5000);
 
@@ -92,32 +105,9 @@ export default function PSTNPhone() {
     };
   }, [myNumber, step]);
 
-  const handleIncomingCall = (caller: string, callId: string) => {
-    console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
-    const call: CallSession = {
-      id: callId,
-      caller,
-      called: myNumber,
-      direction: 'inbound',
-      status: 'ringing',
-      duration: 0,
-      startTime: new Date(),
-    };
-    setCurrentCall(call);
-    playRingtone(400, 800);
-    setTimeout(() => playRingtone(480, 800), 1000);
-  };
-
-  const simulateIncomingCallIfNeeded = () => {
-    // Simulation pour tester le polling
-    if (!currentCall && Math.random() > 0.85) { // ~15% de chance toutes les 5s
-      const callId = 'poll-' + Date.now();
-      handleIncomingCall(targetNumber, callId);
-    }
-  };
-
   const startDurationTimer = () => {
     stopDurationTimer();
+    console.log('⏱️ Timer démarré');
     durationInterval.current = setInterval(() => {
       setCurrentCall(prev => prev && prev.status === 'answered' 
         ? { ...prev, duration: prev.duration + 1 } 
@@ -130,7 +120,7 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio (inchangé)
+  // Audio sécurisé
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
 
@@ -243,6 +233,8 @@ export default function PSTNPhone() {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       let callId = res.data?.callId || `call-${Date.now()}`;
 
+      console.log(`📤 Appel initié - CallId : ${callId}`);
+
       const call: CallSession = {
         id: callId,
         caller: myNumber,
@@ -282,9 +274,11 @@ export default function PSTNPhone() {
     setCurrentCall(null);
   };
 
+  // Simulation manuelle seulement (pas automatique)
   const simulateIncomingCall = () => {
     const callId = 'sim-' + Date.now();
-    console.log(`🔄 Simulation d'appel entrant (ID: ${callId})`);
+    console.log(`🔄 Simulation manuelle d'appel entrant (ID: ${callId})`);
+
     const call: CallSession = {
       id: callId,
       caller: targetNumber,
@@ -342,7 +336,7 @@ export default function PSTNPhone() {
                   placeholder="Numéro à appeler"
                 />
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
-                <button onClick={simulateIncomingCall} className="w-full bg-blue-600 py-5 rounded-3xl text-xl font-bold">📥 Simuler appel entrant</button>
+                <button onClick={simulateIncomingCall} className="w-full bg-blue-600 py-5 rounded-3xl text-xl font-bold">📥 Simuler appel entrant (manuel)</button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-8">
