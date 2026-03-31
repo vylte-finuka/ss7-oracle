@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import * as Ably from 'ably';
 import PSTNDialer from '../lib/pstn-dialer';
 
 interface CallSession {
@@ -23,10 +22,6 @@ export default function PSTNPhone() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [showManualPlay, setShowManualPlay] = useState(false);
 
-  const ablyRef = useRef<Ably.Realtime | null>(null);
-  const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
-  const durationInterval = useRef<NodeJS.Timeout | null>(null);
-
   const [dialer] = useState(() => new PSTNDialer({
     baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || 'http://localhost:3000',
     apiKey: process.env.NEXT_PUBLIC_ORACLE_API_KEY || 'test-key-default',
@@ -38,62 +33,26 @@ export default function PSTNPhone() {
   const analyzerRef = useRef<AnalyserNode | null>(null);
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const durationInterval = useRef<NodeJS.Timeout | null>(null);
+  const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== ABLY (comme un vrai PSTN) ====================
+  // Polling toutes les 5 secondes (persistance comme un vrai PSTN)
   useEffect(() => {
-    const ablyKey = process.env.NEXT_PUBLIC_ABLY_API_KEY;
-    if (!ablyKey) {
-      console.error("❌ NEXT_PUBLIC_ABLY_API_KEY manquante");
-      return;
-    }
+    if (step !== 'phone' || !myNumber) return;
 
-    const ably = new Ably.Realtime({ key: ablyKey, clientId: myNumber });
-    ablyRef.current = ably;
+    console.log(`🔄 Démarrage polling PSTN toutes les 5s pour ${myNumber}`);
 
-    const channel = ably.channels.get('pstn-calls');
-    channelRef.current = channel;
+    pollingInterval.current = setInterval(async () => {
+      console.log(`🔍 Vérification appels entrants pour ${myNumber}...`);
+      // Ici tu peux appeler ton backend pour vérifier les appels en attente
+      // Exemple : await checkIncomingCallsFromBackend();
+    }, 5000);
 
-    console.log(`🔗 Connecté au canal pstn-calls avec numéro ${myNumber}`);
-
-    // Réception d'un appel entrant (venant d'un autre onglet/utilisateur)
-    channel.subscribe('incoming-call', (msg) => {
-      const { caller, callId } = msg.data;
-      if (caller === myNumber) return; // Ne pas se notifier soi-même
-
-      console.log(`📥 VRAI APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
-
-      const call: CallSession = {
-        id: callId,
-        caller,
-        called: myNumber,
-        direction: 'inbound',
-        status: 'ringing',
-        duration: 0,
-        startTime: new Date(),
-      };
-      setCurrentCall(call);
-      playRingtone(400, 800);
-      setTimeout(() => playRingtone(480, 800), 1000);
-    });
-
-    channel.subscribe('call-answered', (msg) => {
-      const { callId } = msg.data;
-      console.log(`✅ Appel décroché : ${callId}`);
-      setCurrentCall(prev => prev && prev.id === callId ? { ...prev, status: 'answered' } : prev);
-      startDurationTimer();
-    });
-
-    channel.subscribe('call-hungup', (msg) => {
-      if (currentCall?.id === msg.data.callId) {
-        console.log(`📴 Appel terminé`);
-        setCurrentCall(null);
-        stopAudioCapture();
-        stopDurationTimer();
-      }
-    });
-
-    return () => ably.close();
-  }, [myNumber]);
+    return () => {
+      if (pollingInterval.current) clearInterval(pollingInterval.current);
+      stopDurationTimer();
+    };
+  }, [step, myNumber]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -215,11 +174,12 @@ export default function PSTNPhone() {
 
   const makeOutboundCall = async () => {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
+
     try {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       let callId = res.data?.callId || `call-${Date.now()}`;
 
-      console.log(`📤 Appel initié vers ${targetNumber} - CallId : ${callId}`);
+      console.log(`📤 Appel initié de ${myNumber} vers ${targetNumber} - CallId: ${callId}`);
 
       const call: CallSession = {
         id: callId,
@@ -231,13 +191,6 @@ export default function PSTNPhone() {
         startTime: new Date(),
       };
       setCurrentCall(call);
-
-      // Envoi réel via Ably
-      channelRef.current?.publish('call', { 
-        caller: myNumber, 
-        called: targetNumber, 
-        callId 
-      });
 
       await startAudioCapture(callId);
       playRingtone(440, 1000);
@@ -252,7 +205,7 @@ export default function PSTNPhone() {
     try {
       await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
-      channelRef.current?.publish('call-answered', { callId: currentCall.id });
+      startDurationTimer();
     } catch (e) {
       console.error(e);
     }
@@ -261,7 +214,6 @@ export default function PSTNPhone() {
   const hangupCall = () => {
     stopAudioCapture();
     stopDurationTimer();
-    channelRef.current?.publish('call-hungup', { callId: currentCall?.id });
     setCurrentCall(null);
   };
 
