@@ -6,13 +6,26 @@ export interface DialerConfig {
   timeout?: number;
 }
 
+export interface CallRequest {
+  callType: "voice" | "sms-mo" | "sms-mt";
+  callerNumber?: string;
+  calledNumber?: string;
+  status?: "INITIATED" | "ANSWERED" | "COMPLETED" | "HUNGUP" | "QUEUED";
+  messageText?: string;
+  duration?: number;
+  recordingUrl?: string;
+  timestamp?: number;
+  callId?: string;
+  audioData?: string;
+  sequenceNumber?: number;
+}
+
 export default class PSTNDialer {
   private client: AxiosInstance;
   private config: DialerConfig;
 
   constructor(config: DialerConfig) {
     this.config = { timeout: 30000, ...config };
-
     this.client = axios.create({
       baseURL: this.config.baseUrl,
       timeout: this.config.timeout,
@@ -24,7 +37,7 @@ export default class PSTNDialer {
   }
 
   async initiateCall(callerNumber: string, calledNumber: string) {
-    const request = {
+    const request: CallRequest = {
       callType: "voice",
       callerNumber: callerNumber || "",
       calledNumber: calledNumber || "",
@@ -35,7 +48,7 @@ export default class PSTNDialer {
   }
 
   async answerCall(callId: string, options: { callerNumber: string; calledNumber: string }) {
-    const request = {
+    const request: CallRequest = {
       callType: "voice",
       callerNumber: options.callerNumber || "",
       calledNumber: options.calledNumber || "",
@@ -46,7 +59,6 @@ export default class PSTNDialer {
     return this.sendCall(request);
   }
 
-  // Correction principale ici
   async sendAudioData(
     callId: string,
     audioData: string,
@@ -59,7 +71,7 @@ export default class PSTNDialer {
       return { success: false, message: "audioData vide", data: {} };
     }
 
-    const request = {
+    const request: CallRequest = {
       callType: "voice",
       status: "ANSWERED",
       callId: callId || "",
@@ -71,12 +83,11 @@ export default class PSTNDialer {
     };
 
     console.log(`📤 Envoi audio chunk #${sequenceNumber} | caller: ${callerNumber} | called: ${calledNumber}`);
-
     return this.sendCall(request);
   }
 
   async hangupCall(callId: string, duration: number, options: { callerNumber: string; calledNumber: string }) {
-    const request = {
+    const request: CallRequest = {
       callType: "voice",
       callerNumber: options.callerNumber || "",
       calledNumber: options.calledNumber || "",
@@ -88,7 +99,30 @@ export default class PSTNDialer {
     return this.sendCall(request);
   }
 
-  private async sendCall(request: any) {
+  /**
+   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS (utilisé par le polling)
+   */
+  async checkIncomingCalls(calledNumber: string) {
+    const request: CallRequest = {
+      callType: "voice",
+      status: "INITIATED",
+      calledNumber: calledNumber || "",
+      timestamp: Math.floor(Date.now() / 1000),
+    };
+
+    console.log(`🔍 [checkIncomingCalls] Requête pour numéro appelé: ${calledNumber}`);
+    
+    try {
+      const response = await this.sendCall(request);
+      console.log(`✅ [checkIncomingCalls] Réponse Oracle:`, response);
+      return response;
+    } catch (error: any) {
+      console.error(`❌ [checkIncomingCalls] Erreur:`, error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  private async sendCall(request: CallRequest) {
     try {
       const response = await this.client.post("/api/ss7-oracle", request);
       return response.data;
