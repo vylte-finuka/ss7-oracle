@@ -36,41 +36,36 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== VRAI POLLING ORACLE ====================
+  // ==================== VRAI POLLING (ralenti à 8s pour éviter timeout) ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
-    console.log(`🔄 VRAI polling Oracle activé toutes les 5s pour ${myNumber}`);
+    console.log(`🔄 Polling Oracle activé (8s) pour ${myNumber}`);
 
     pollingInterval.current = setInterval(async () => {
       try {
-        console.log(`🔍 Vérification réelle des appels entrants pour ${myNumber}...`);
+        console.log(`🔍 Vérification appels entrants pour ${myNumber}...`);
 
         const res = await dialer.checkIncomingCalls(myNumber);
 
         if (res?.success && res?.data) {
           const d = res.data;
-          // Extraction très robuste selon la structure réelle de ton Oracle
           let caller = 'unknown';
           let callId = `in-${Date.now()}`;
-          let status = '';
 
-          // Essayer plusieurs chemins possibles dans la réponse
-          if (d.call && d.call.caller) caller = d.call.caller;
+          // Parsing très complet selon ta réponse Oracle
+          if (d.call?.caller) caller = d.call.caller;
           else if (d.caller) caller = d.caller;
-          else if (d.call && d.call.callerNumber) caller = d.call.callerNumber;
+          else if (d.call?.callerNumber) caller = d.call.callerNumber;
           else if (d.callerNumber) caller = d.callerNumber;
 
           if (d.callId) callId = d.callId;
-          else if (d.call && d.call.callId) callId = d.call.callId;
+          else if (d.call?.callId) callId = d.call.callId;
 
-          if (d.call && d.call.status) status = d.call.status;
-          else if (d.status) status = d.status;
+          console.log(`📊 Extrait → Caller: "${caller}" | CallId: ${callId}`);
 
-          console.log(`📊 Données extraites - Caller: ${caller} | CallId: ${callId} | Status: ${status}`);
-
-          if (caller !== 'unknown' && caller !== myNumber && (status === 'INITIATED' || !status) && !currentCall) {
-            console.log(`✅ APPEL ENTRANT RÉEL DÉTECTÉ ! Caller: ${caller} | CallId: ${callId}`);
+          if (caller !== 'unknown' && caller !== myNumber && !currentCall) {
+            console.log(`✅ APPEL ENTRANT REÇU ! Caller: ${caller} | CallId: ${callId}`);
 
             const incomingCall: CallSession = {
               id: callId,
@@ -85,14 +80,12 @@ export default function PSTNPhone() {
             setCurrentCall(incomingCall);
             playRingtone(400, 800);
             setTimeout(() => playRingtone(480, 1000), 1200);
-          } else {
-            console.log(`⚠️ Pas d'appel entrant valide cette fois (caller: ${caller})`);
           }
         }
       } catch (err: any) {
-        console.error('Erreur polling Oracle:', err.message || err);
+        console.error('Erreur polling:', err.message || err);
       }
-    }, 5000);
+    }, 8000); // 8 secondes pour éviter les timeouts
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -114,6 +107,7 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
+  // Audio (identique)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
     let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
