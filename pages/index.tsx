@@ -36,7 +36,7 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== VRAI POLLING ORACLE (toutes les 5s) ====================
+  // ==================== VRAI POLLING ORACLE ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -46,18 +46,22 @@ export default function PSTNPhone() {
       try {
         console.log(`🔍 Vérification réelle des appels entrants pour ${myNumber}...`);
 
-        // === APPEL RÉEL À TON ORACLE ===
-        const res = await dialer.checkIncomingCalls(myNumber);   // ← méthode à ajouter dans PSTNDialer
+        const res = await dialer.checkIncomingCalls(myNumber);
 
-        if (res?.success && res?.data?.call && !currentCall) {
-          const inc = res.data.call;
+        if (res?.success && res?.data) {
+          const data = res.data;
+          const callInfo = data.call || data; // ton Oracle met parfois les infos directement dans data
 
-          if (inc.caller && inc.caller !== myNumber && inc.status === 'INITIATED') {
-            console.log(`📥 APPEL ENTRANT RÉEL DÉTECTÉ via Oracle ! Caller: ${inc.caller} | CallId: ${inc.callId}`);
+          const caller = callInfo?.caller || callInfo?.callerNumber || 'unknown';
+          const callId = callInfo?.callId || data.callId || `in-${Date.now()}`;
+          const status = callInfo?.status || data.status;
+
+          if (caller !== 'unknown' && caller !== myNumber && status === 'INITIATED' && !currentCall) {
+            console.log(`📥 APPEL ENTRANT RÉEL DÉTECTÉ via Oracle ! Caller: ${caller} | CallId: ${callId}`);
 
             const incomingCall: CallSession = {
-              id: inc.callId || `in-${Date.now()}`,
-              caller: inc.caller,
+              id: callId,
+              caller: caller,
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -68,6 +72,8 @@ export default function PSTNPhone() {
             setCurrentCall(incomingCall);
             playRingtone(400, 800);
             setTimeout(() => playRingtone(480, 1000), 1200);
+          } else if (caller === 'unknown') {
+            console.log('⚠️ Réponse Oracle reçue mais caller manquant ou invalide');
           }
         }
       } catch (err: any) {
@@ -95,7 +101,6 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio (identique à avant)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
     let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
@@ -190,7 +195,6 @@ export default function PSTNPhone() {
     } catch {}
   };
 
-  // ==================== ACTIONS ====================
   const login = () => setStep('phone');
 
   const makeOutboundCall = async () => {
