@@ -26,6 +26,7 @@ export default function PSTNPhone() {
   const ablyRef = useRef<Ably.Realtime | null>(null);
   const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
+  const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
   const [dialer] = useState(() => new PSTNDialer({
     baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || 'http://localhost:3000',
@@ -39,7 +40,7 @@ export default function PSTNPhone() {
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  // ==================== ABLY avec polling permanent ====================
+  // ==================== ABLY + POLLING 5 secondes ====================
   useEffect(() => {
     const ablyKey = process.env.NEXT_PUBLIC_ABLY_API_KEY;
     if (!ablyKey) {
@@ -47,80 +48,79 @@ export default function PSTNPhone() {
       return;
     }
 
-    const ably = new Ably.Realtime({
-      key: ablyKey,
-      clientId: myNumber,
-      // Options pour un comportement plus "permanent" comme Socket.io
-      useBinaryProtocol: false,
-      recover: true,
-      transportParams: { heartbeat: '30000' }, // Heartbeat toutes les 30s
-      disconnectedRetryTimeout: 15000,
-      suspendedRetryTimeout: 30000,
-    });
-
+    const ably = new Ably.Realtime({ key: ablyKey, clientId: myNumber });
     ablyRef.current = ably;
-
-    ably.connection.on('connected', () => console.log('✅ Ably connecté (permanent)'));
-    ably.connection.on('disconnected', () => console.log('⚠️ Ably déconnecté'));
-    ably.connection.on('suspended', () => console.log('⚠️ Ably en mode suspended'));
 
     const channel = ably.channels.get('pstn-calls');
     channelRef.current = channel;
 
-    console.log(`🔗 Abonné au canal pstn-calls avec numéro ${myNumber}`);
-
+    // Ably en push (normal)
     channel.subscribe('incoming-call', (msg) => {
       const { caller, callId } = msg.data;
       if (caller === myNumber) return;
-
-      console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
-
-      const call: CallSession = {
-        id: callId,
-        caller,
-        called: myNumber,
-        direction: 'inbound',
-        status: 'ringing',
-        duration: 0,
-        startTime: new Date(),
-      };
-      setCurrentCall(call);
-      playRingtone(400, 800);
-      setTimeout(() => playRingtone(480, 800), 1000);
+      handleIncomingCall(caller, callId);
     });
 
     channel.subscribe('call-answered', (msg) => {
       const { callId } = msg.data;
-      console.log(`✅ Signal call-answered reçu pour ${callId}`);
-      setCurrentCall(prev => {
-        if (prev && prev.id === callId) {
-          const updated = { ...prev, status: 'answered' };
-          startDurationTimer();
-          return updated;
-        }
-        return prev;
-      });
+      setCurrentCall(prev => prev && prev.id === callId ? { ...prev, status: 'answered' } : prev);
+      startDurationTimer();
     });
 
     channel.subscribe('call-hungup', (msg) => {
-      const { callId } = msg.data;
-      if (currentCall?.id === callId) {
-        console.log(`📴 Appel terminé`);
+      if (currentCall?.id === msg.data.callId) {
         setCurrentCall(null);
         stopAudioCapture();
         stopDurationTimer();
       }
     });
 
-    return () => ably.close();
-  }, [myNumber]);
+    // === POLLING toutes les 5 secondes (comme un vrai PSTN) ===
+    pollingInterval.current = setInterval(() => {
+      if (step === 'phone' && myNumber) {
+        console.log(`🔄 Polling PSTN (toutes les 5s) pour ${myNumber}`);
+        // Ici tu peux appeler ton backend pour vérifier les appels entrants si besoin
+        // Pour l'instant on simule
+        simulateIncomingCallIfNeeded();
+      }
+    }, 5000);
+
+    return () => {
+      ably.close();
+      if (pollingInterval.current) clearInterval(pollingInterval.current);
+      stopDurationTimer();
+    };
+  }, [myNumber, step]);
+
+  const handleIncomingCall = (caller: string, callId: string) => {
+    console.log(`📥 APPEL ENTRANT REÇU de ${caller} (ID: ${callId})`);
+    const call: CallSession = {
+      id: callId,
+      caller,
+      called: myNumber,
+      direction: 'inbound',
+      status: 'ringing',
+      duration: 0,
+      startTime: new Date(),
+    };
+    setCurrentCall(call);
+    playRingtone(400, 800);
+    setTimeout(() => playRingtone(480, 800), 1000);
+  };
+
+  const simulateIncomingCallIfNeeded = () => {
+    // Simulation pour tester le polling
+    if (!currentCall && Math.random() > 0.85) { // ~15% de chance toutes les 5s
+      const callId = 'poll-' + Date.now();
+      handleIncomingCall(targetNumber, callId);
+    }
+  };
 
   const startDurationTimer = () => {
     stopDurationTimer();
-    console.log('⏱️ Timer démarré');
     durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => prev && prev.status === 'answered'
-        ? { ...prev, duration: prev.duration + 1 }
+      setCurrentCall(prev => prev && prev.status === 'answered' 
+        ? { ...prev, duration: prev.duration + 1 } 
         : prev
       );
     }, 1000);
@@ -130,7 +130,7 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio sécurisé
+  // Audio (inchangé)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
 
@@ -139,15 +139,11 @@ export default function PSTNPhone() {
     if (base64.length < 20) return;
 
     try {
-      if (playbackAudioRef.current.src.startsWith('blob:')) {
-        URL.revokeObjectURL(playbackAudioRef.current.src);
-      }
+      if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
 
       const binaryString = atob(base64);
       const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
 
       const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
       const url = URL.createObjectURL(blob);
@@ -158,9 +154,7 @@ export default function PSTNPhone() {
       audio.load();
 
       audio.play().catch(err => {
-        if (err.name === 'AbortError' || err.name === 'NotAllowedError') {
-          setShowManualPlay(true);
-        }
+        if (err.name === 'AbortError' || err.name === 'NotAllowedError') setShowManualPlay(true);
       });
     } catch (err) {
       console.error('❌ Erreur atob:', err.message);
@@ -249,8 +243,6 @@ export default function PSTNPhone() {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       let callId = res.data?.callId || `call-${Date.now()}`;
 
-      console.log(`📤 Appel initié - CallId : ${callId}`);
-
       const call: CallSession = {
         id: callId,
         caller: myNumber,
@@ -293,7 +285,6 @@ export default function PSTNPhone() {
   const simulateIncomingCall = () => {
     const callId = 'sim-' + Date.now();
     console.log(`🔄 Simulation d'appel entrant (ID: ${callId})`);
-
     const call: CallSession = {
       id: callId,
       caller: targetNumber,
