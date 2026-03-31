@@ -10,7 +10,7 @@ const nextConfig = {
   async headers() {
     const cspHeader = `
       default-src 'self';
-      script-src 'self' 'unsafe-inline' 'unsafe-eval' https: 'wasm-unsafe-eval';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' *;
       style-src 'self' 'unsafe-inline';
       img-src 'self' blob: data:;
       font-src 'self';
@@ -19,7 +19,8 @@ const nextConfig = {
                  wss://*.ably.com 
                  wss://main.realtime.ably.net 
                  wss://ws-up.ably-realtime.com 
-                 https://internet-up.ably-realtime.com;
+                 https://internet-up.ably-realtime.com 
+                 *;
       media-src 'self' blob:;
       object-src 'none';
       base-uri 'self';
