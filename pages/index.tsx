@@ -36,7 +36,7 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== VRAI POLLING (ralenti à 8s pour éviter timeout) ====================
+  // ==================== POLLING CORRIGÉ ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -50,17 +50,16 @@ export default function PSTNPhone() {
 
         if (res?.success && res?.data) {
           const d = res.data;
-          let caller = 'unknown';
-          let callId = `in-${Date.now()}`;
 
-          // Parsing très complet selon ta réponse Oracle
-          if (d.call?.caller) caller = d.call.caller;
-          else if (d.caller) caller = d.caller;
-          else if (d.call?.callerNumber) caller = d.call.callerNumber;
-          else if (d.callerNumber) caller = d.callerNumber;
+          // Extraction très robuste
+          let caller = d.call?.caller || d.caller || 'unknown';
+          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
 
-          if (d.callId) callId = d.callId;
-          else if (d.call?.callId) callId = d.call.callId;
+          // FIX SPÉCIAL : si l'Oracle renvoie "unknown", on prend le "called" comme caller
+          if (caller === 'unknown' && d.call?.called) {
+            caller = d.call.called;
+            console.log(`🔄 Oracle a renvoyé "unknown" → on utilise le champ called : ${caller}`);
+          }
 
           console.log(`📊 Extrait → Caller: "${caller}" | CallId: ${callId}`);
 
@@ -83,9 +82,9 @@ export default function PSTNPhone() {
           }
         }
       } catch (err: any) {
-        console.error('Erreur polling:', err.message || err);
+        console.error('Erreur polling Oracle:', err.message || err);
       }
-    }, 8000); // 8 secondes pour éviter les timeouts
+    }, 8000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -107,7 +106,6 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio (identique)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
     let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
