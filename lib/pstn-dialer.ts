@@ -53,7 +53,7 @@ export default class PSTNDialer {
       callType: "voice",
       status: "INITIATED",
       calledNumber: calledNumber || "",
-      callerNumber: "",                    // On laisse vide pour dire "cherche les entrants"
+      callerNumber: "",                    // Important : vide pour dire "je veux les appels entrants"
       timestamp: Math.floor(Date.now() / 1000),
     };
     console.log(`🔍 checkIncomingCalls polling pour appelé: ${calledNumber}`);
