@@ -36,7 +36,7 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== POLLING LÉGER (silencieux) ====================
+  // ==================== POLLING LÉGER ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -44,19 +44,24 @@ export default function PSTNPhone() {
 
     pollingInterval.current = setInterval(async () => {
       try {
-        // On tente quand même, mais on ne log plus les erreurs timeout
         const res = await dialer.checkIncomingCalls(myNumber, myNumber);
 
         if (res?.success && res?.data) {
           const d = res.data;
-          let caller = d.call?.caller || d.caller || d.call?.called || myNumber;
 
-          if (caller === 'unknown' || !caller) caller = myNumber;
+          let caller = d.call?.caller || d.caller || d.call?.called || 'unknown';
+          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
 
-          const callId = d.callId || `in-${Date.now()}`;
+          // FORCE le caller avec le numéro distant si l'Oracle renvoie "unknown" ou le même numéro
+          if (caller === 'unknown' || caller === '' || caller === myNumber || caller === d.call?.called) {
+            caller = targetNumber;
+            console.log(`🔄 Correction caller : Oracle a renvoyé "${d.call?.caller || 'unknown'}" → on force le numéro distant : ${caller}`);
+          }
+
+          console.log(`📊 Extrait → Caller: "${caller}" | Called: "${d.call?.called}" | CallId: ${callId}`);
 
           if (!currentCall) {
-            console.log(`✅ APPEL ENTRANT REÇU (via polling) ! Caller: ${caller}`);
+            console.log(`✅ APPEL ENTRANT REÇU ! Caller: ${caller} → ${myNumber}`);
 
             const incomingCall: CallSession = {
               id: callId,
@@ -74,15 +79,15 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {
-        // On ignore silencieusement les timeouts et 502/504
+        // Ignore silencieusement les erreurs réseau
       }
-    }, 10000); // toutes les 10 secondes
+    }, 10000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, currentCall]);
+  }, [step, myNumber, targetNumber, currentCall]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -286,7 +291,9 @@ export default function PSTNPhone() {
             ) : (
               <div className="bg-white/10 rounded-3xl p-8">
                 <p className="text-center text-3xl font-mono mb-6">
-                  {currentCall.direction === 'outbound' ? 'Vers' : 'De'} {currentCall.called || currentCall.caller}
+                  {currentCall.direction === 'inbound' 
+                    ? `De ${currentCall.caller}` 
+                    : `Vers ${currentCall.called}`}
                 </p>
                 <p className="text-center text-2xl mb-8 font-semibold">
                   {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
