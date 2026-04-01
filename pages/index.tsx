@@ -36,11 +36,11 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== POLLING LÉGER ====================
+  // ==================== POLLING ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
-    console.log(`🔄 Polling léger activé pour ${myNumber}`);
+    console.log(`🔄 Polling activé pour ${myNumber}`);
 
     pollingInterval.current = setInterval(async () => {
       try {
@@ -49,21 +49,15 @@ export default function PSTNPhone() {
         if (res?.success && res?.data) {
           const d = res.data;
 
-          // Extraction du caller
+          // On prend exactement ce que renvoie l'Oracle, sans aucune correction
           let caller = d.call?.caller || d.caller || 'unknown';
+          let called = d.call?.called || d.called || myNumber;
+          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
 
-          // CORRECTION FINALE : si l'Oracle renvoie le même numéro ou "unknown", on prend le targetNumber (le vrai distant)
-          if (caller === 'unknown' || caller === '' || caller === myNumber || caller === d.call?.called) {
-            caller = targetNumber;
-            console.log(`🔄 Correction caller : Oracle a renvoyé "${d.call?.caller || 'unknown'}" → on force le numéro distant : ${caller}`);
-          }
+          console.log(`📊 Extrait brut Oracle → Caller: "${caller}" | Called: "${called}" | CallId: ${callId}`);
 
-          const callId = d.callId || `in-${Date.now()}`;
-
-          console.log(`📊 Extrait → Caller: "${caller}" | Called: "${d.call?.called}" | CallId: ${callId}`);
-
-          if (!currentCall) {
-            console.log(`✅ APPEL ENTRANT REÇU ! Caller: ${caller} → ${myNumber}`);
+          if (!currentCall && caller !== 'unknown' && caller !== myNumber) {
+            console.log(`✅ APPEL ENTRANT DÉTECTÉ ! Caller: ${caller} → ${myNumber}`);
 
             const incomingCall: CallSession = {
               id: callId,
@@ -81,7 +75,7 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {
-        // On ignore silencieusement les erreurs réseau
+        // Erreurs silencieuses (timeout, réseau, etc.)
       }
     }, 10000);
 
@@ -89,7 +83,7 @@ export default function PSTNPhone() {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, targetNumber, currentCall]);
+  }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -134,7 +128,9 @@ export default function PSTNPhone() {
 
   const startAudioCapture = async (callId: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+      });
       mediaStreamRef.current = stream;
       console.log('✅ Microphone activé');
 
@@ -151,7 +147,13 @@ export default function PSTNPhone() {
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1];
           if (base64) {
-            const response = await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
+            const response = await dialer.sendAudioData(
+              callId, 
+              base64, 
+              Date.now(), 
+              myNumber, 
+              currentCall?.called || targetNumber
+            );
             const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
             if (audioBase64) playAudioFromBase64(audioBase64);
           }
@@ -203,7 +205,7 @@ export default function PSTNPhone() {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
     try {
       const res = await dialer.initiateCall(myNumber, targetNumber);
-      let callId = res.data?.callId || `call-${Date.now()}`;
+      const callId = res.data?.callId || `call-${Date.now()}`;
 
       console.log(`📤 Appel initié de ${myNumber} vers ${targetNumber} - CallId: ${callId}`);
 
@@ -229,7 +231,10 @@ export default function PSTNPhone() {
   const answerCall = async () => {
     if (!currentCall) return;
     try {
-      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
+      await dialer.answerCall(currentCall.id, { 
+        callerNumber: myNumber, 
+        calledNumber: currentCall.caller 
+      });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       startDurationTimer();
     } catch (e) {
@@ -271,13 +276,22 @@ export default function PSTNPhone() {
                 <p className="text-sm text-gray-400">Connecté en tant que</p>
                 <p className="font-mono text-xl">{myNumber}</p>
               </div>
-              <button onClick={() => { setStep('login'); setCurrentCall(null); stopAudioCapture(); }} className="text-red-400">Déconnexion</button>
+              <button 
+                onClick={() => { 
+                  setStep('login'); 
+                  setCurrentCall(null); 
+                  stopAudioCapture(); 
+                }} 
+                className="text-red-400 hover:text-red-300"
+              >
+                Déconnexion
+              </button>
             </div>
 
             {!currentCall ? (
               <div className="space-y-6">
                 <div>
-                  <label className="block text-sm text-gray-400 mb-2">Numéro à appeler (distant)</label>
+                  <label className="block text-sm text-gray-400 mb-2">Numéro à appeler</label>
                   <input
                     type="tel"
                     value={targetNumber}
@@ -286,8 +300,11 @@ export default function PSTNPhone() {
                     placeholder="Numéro distant"
                   />
                 </div>
-                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
-                  📞 Appeler ce numéro
+                <button 
+                  onClick={makeOutboundCall} 
+                  className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold"
+                >
+                  📞 Appeler
                 </button>
               </div>
             ) : (
@@ -297,6 +314,7 @@ export default function PSTNPhone() {
                     ? `De ${currentCall.caller}` 
                     : `Vers ${currentCall.called}`}
                 </p>
+
                 <p className="text-center text-2xl mb-8 font-semibold">
                   {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
                 </p>
@@ -317,7 +335,10 @@ export default function PSTNPhone() {
                 )}
 
                 {showManualPlay && (
-                  <button onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4">
+                  <button 
+                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} 
+                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
+                  >
                     ▶️ Jouer l'audio manuellement
                   </button>
                 )}
