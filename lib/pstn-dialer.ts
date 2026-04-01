@@ -99,24 +99,25 @@ export default class PSTNDialer {
     return this.sendCall(request);
   }
 
-   /**
-   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS (polling)
-   * On force le caller réel si l'Oracle renvoie "unknown"
+  /**
+   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS
+   * On passe explicitement calledNumber = le numéro connecté
+   * et callerNumber = "" pour que l'Oracle sache que c'est une requête de polling entrant
    */
-  async checkIncomingCalls(calledNumber: string, realCaller?: string) {
+  async checkIncomingCalls(calledNumber: string) {
     const request: CallRequest = {
       callType: "voice",
       status: "INITIATED",
-      calledNumber: calledNumber || "",
-      callerNumber: realCaller || "",   // on passe le vrai caller si disponible
+      calledNumber: calledNumber || "",     // Numéro que l'on écoute (le connecté)
+      callerNumber: "",                     // On laisse vide pour dire "je cherche les appels entrants"
       timestamp: Math.floor(Date.now() / 1000),
     };
 
-    console.log(`🔍 [checkIncomingCalls] Requête pour ${calledNumber} (caller réel: ${realCaller || 'non fourni'})`);
+    console.log(`🔍 [checkIncomingCalls] Requête polling pour appelé: ${calledNumber}`);
 
     try {
       const response = await this.sendCall(request);
-      console.log(`✅ [checkIncomingCalls] Réponse complète:`, JSON.stringify(response, null, 2));
+      console.log(`✅ [checkIncomingCalls] Réponse Oracle reçue`);
       return response;
     } catch (error: any) {
       console.error(`❌ [checkIncomingCalls] Erreur:`, error.response?.data || error.message);
