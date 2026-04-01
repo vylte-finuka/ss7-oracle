@@ -44,6 +44,19 @@ export default class PSTNDialer {
       status: "INITIATED",
       timestamp: Math.floor(Date.now() / 1000),
     };
+    console.log(`📤 initiateCall → caller: ${callerNumber} | called: ${calledNumber}`);
+    return this.sendCall(request);
+  }
+
+  async checkIncomingCalls(calledNumber: string) {
+    const request: CallRequest = {
+      callType: "voice",
+      status: "INITIATED",
+      calledNumber: calledNumber || "",
+      callerNumber: "",                    // On laisse vide pour dire "cherche les entrants"
+      timestamp: Math.floor(Date.now() / 1000),
+    };
+    console.log(`🔍 checkIncomingCalls polling pour appelé: ${calledNumber}`);
     return this.sendCall(request);
   }
 
@@ -66,23 +79,20 @@ export default class PSTNDialer {
     callerNumber: string = "",
     calledNumber: string = ""
   ) {
-    if (!audioData) {
-      console.warn("⚠️ sendAudioData appelé avec audioData vide");
-      return { success: false, message: "audioData vide", data: {} };
-    }
+    if (!audioData) return { success: false, message: "audioData vide" };
 
     const request: CallRequest = {
       callType: "voice",
       status: "ANSWERED",
-      callId: callId || "",
-      callerNumber: callerNumber || "",
-      calledNumber: calledNumber || "",
-      audioData: audioData,
+      callId,
+      callerNumber,
+      calledNumber,
+      audioData,
       sequenceNumber,
       timestamp: Math.floor(Date.now() / 1000),
     };
 
-    console.log(`📤 Envoi audio chunk #${sequenceNumber} | caller: ${callerNumber} | called: ${calledNumber}`);
+    console.log(`📤 Audio chunk #${sequenceNumber} → caller: ${callerNumber} | called: ${calledNumber}`);
     return this.sendCall(request);
   }
 
@@ -97,32 +107,6 @@ export default class PSTNDialer {
       timestamp: Math.floor(Date.now() / 1000),
     };
     return this.sendCall(request);
-  }
-
-  /**
-   * VÉRIFICATION RÉELLE DES APPELS ENTRANTS
-   * On passe explicitement calledNumber = le numéro connecté
-   * et callerNumber = "" pour que l'Oracle sache que c'est une requête de polling entrant
-   */
-  async checkIncomingCalls(calledNumber: string) {
-    const request: CallRequest = {
-      callType: "voice",
-      status: "INITIATED",
-      calledNumber: calledNumber || "",     // Numéro que l'on écoute (le connecté)
-      callerNumber: "",                     // On laisse vide pour dire "je cherche les appels entrants"
-      timestamp: Math.floor(Date.now() / 1000),
-    };
-
-    console.log(`🔍 [checkIncomingCalls] Requête polling pour appelé: ${calledNumber}`);
-
-    try {
-      const response = await this.sendCall(request);
-      console.log(`✅ [checkIncomingCalls] Réponse Oracle reçue`);
-      return response;
-    } catch (error: any) {
-      console.error(`❌ [checkIncomingCalls] Erreur:`, error.response?.data || error.message);
-      throw error;
-    }
   }
 
   private async sendCall(request: CallRequest) {
