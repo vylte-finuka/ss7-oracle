@@ -71,7 +71,7 @@ async function testLiveCall() {
     console.log("🎧 Parlez dans votre téléphone — Oracle répondra en live.\n");
 
     // Laisser l'appel tourner 60 secondes
-    await new Promise(r => setTimeout(r, 60000));
+    await new Promise(r => setTimeout(r, 30000));
 
     // 3️⃣ Raccrocher
     console.log("📴 Raccroché...");

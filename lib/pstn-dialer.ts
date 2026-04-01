@@ -25,7 +25,7 @@ export default class PSTNDialer {
   private config: DialerConfig;
 
   constructor(config: DialerConfig) {
-    this.config = { timeout: 60000, ...config };
+    this.config = { timeout: 30000, ...config };
     this.client = axios.create({
       baseURL: this.config.baseUrl,
       timeout: this.config.timeout,
@@ -99,18 +99,20 @@ export default class PSTNDialer {
     return this.sendCall(request);
   }
 
-  /**
+   /**
    * VÉRIFICATION RÉELLE DES APPELS ENTRANTS (polling)
+   * On force le caller réel si l'Oracle renvoie "unknown"
    */
-  async checkIncomingCalls(calledNumber: string) {
+  async checkIncomingCalls(calledNumber: string, realCaller?: string) {
     const request: CallRequest = {
       callType: "voice",
       status: "INITIATED",
       calledNumber: calledNumber || "",
+      callerNumber: realCaller || "",   // on passe le vrai caller si disponible
       timestamp: Math.floor(Date.now() / 1000),
     };
 
-    console.log(`🔍 [checkIncomingCalls] Requête pour ${calledNumber}`);
+    console.log(`🔍 [checkIncomingCalls] Requête pour ${calledNumber} (caller réel: ${realCaller || 'non fourni'})`);
 
     try {
       const response = await this.sendCall(request);
