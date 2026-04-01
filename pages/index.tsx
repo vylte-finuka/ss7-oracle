@@ -36,35 +36,27 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== POLLING ORACLE (avec correction "unknown") ====================
+  // ==================== POLLING LÉGER (silencieux) ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
-    console.log(`🔄 Polling Oracle activé (8s) pour ${myNumber}`);
+    console.log(`🔄 Polling léger activé pour ${myNumber}`);
 
     pollingInterval.current = setInterval(async () => {
       try {
-        console.log(`🔍 Vérification appels entrants pour ${myNumber}...`);
-
-        // On passe myNumber comme caller réel pour éviter "unknown"
+        // On tente quand même, mais on ne log plus les erreurs timeout
         const res = await dialer.checkIncomingCalls(myNumber, myNumber);
 
         if (res?.success && res?.data) {
           const d = res.data;
+          let caller = d.call?.caller || d.caller || d.call?.called || myNumber;
 
-          let caller = d.call?.caller || d.caller || 'unknown';
-          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
+          if (caller === 'unknown' || !caller) caller = myNumber;
 
-          // CORRECTION FINALE : si c'est encore "unknown", on force le numéro connecté
-          if (caller === 'unknown' || caller === '') {
-            caller = myNumber;
-            console.log(`🔄 Oracle a renvoyé "unknown" → on force le numéro connecté : ${caller}`);
-          }
+          const callId = d.callId || `in-${Date.now()}`;
 
-          console.log(`📊 Extrait → Caller: "${caller}" | CallId: ${callId}`);
-
-          if (caller !== myNumber && !currentCall) {
-            console.log(`✅ APPEL ENTRANT REÇU ! Caller: ${caller} | CallId: ${callId}`);
+          if (!currentCall) {
+            console.log(`✅ APPEL ENTRANT REÇU (via polling) ! Caller: ${caller}`);
 
             const incomingCall: CallSession = {
               id: callId,
@@ -81,10 +73,10 @@ export default function PSTNPhone() {
             setTimeout(() => playRingtone(480, 1000), 1200);
           }
         }
-      } catch (err: any) {
-        console.error('Erreur polling Oracle:', err.message || err);
+      } catch (err) {
+        // On ignore silencieusement les timeouts et 502/504
       }
-    }, 8000);
+    }, 10000); // toutes les 10 secondes
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -106,7 +98,6 @@ export default function PSTNPhone() {
     if (durationInterval.current) clearInterval(durationInterval.current);
   };
 
-  // Audio (identique)
   const playAudioFromBase64 = useCallback((input: any) => {
     if (!playbackAudioRef.current || !input) return;
     let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');

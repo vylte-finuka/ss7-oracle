@@ -25,7 +25,7 @@ export default class PSTNDialer {
   private config: DialerConfig;
 
   constructor(config: DialerConfig) {
-    this.config = { timeout: 60000, ...config };
+    this.config = { timeout: 160000, ...config };
     this.client = axios.create({
       baseURL: this.config.baseUrl,
       timeout: this.config.timeout,
