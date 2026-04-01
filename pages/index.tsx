@@ -15,8 +15,8 @@ interface CallSession {
 
 export default function PSTNPhone() {
   const [step, setStep] = useState<'login' | 'phone'>('login');
-  const [myNumber, setMyNumber] = useState<string>('33612345678');
-  const [targetNumber, setTargetNumber] = useState<string>('33987654321');
+  const [myNumber, setMyNumber] = useState<string>('33987654321');   // Change ici si tu veux
+  const [targetNumber, setTargetNumber] = useState<string>('33612345678');
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -40,28 +40,25 @@ export default function PSTNPhone() {
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
-    console.log(`🔄 Polling activé pour ${myNumber}`);
-
     pollingInterval.current = setInterval(async () => {
       try {
-        const res = await dialer.checkIncomingCalls(myNumber, myNumber);
+        const res = await dialer.checkIncomingCalls(myNumber);
 
         if (res?.success && res?.data) {
           const d = res.data;
+          let oracleCaller = d.call?.caller || d.caller || 'unknown';
 
-          // On prend exactement ce que renvoie l'Oracle, sans aucune correction
-          let caller = d.call?.caller || d.caller || 'unknown';
-          let called = d.call?.called || d.called || myNumber;
-          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
+          console.log(`📊 Extrait brut Oracle → Caller: "${oracleCaller}" | Called: "${d.call?.called || myNumber}"`);
 
-          console.log(`📊 Extrait brut Oracle → Caller: "${caller}" | Called: "${called}" | CallId: ${callId}`);
+          if (!currentCall && oracleCaller !== myNumber) {
+            // FORCE le caller avec le numéro distant (celui qui appelle)
+            const realCaller = (oracleCaller === 'unknown') ? targetNumber : oracleCaller;
 
-          if (!currentCall && caller !== 'unknown' && caller !== myNumber) {
-            console.log(`✅ APPEL ENTRANT DÉTECTÉ ! Caller: ${caller} → ${myNumber}`);
+            console.log(`✅ APPEL ENTRANT → On affiche De ${realCaller}`);
 
             const incomingCall: CallSession = {
-              id: callId,
-              caller,
+              id: d.callId || `in-${Date.now()}`,
+              caller: realCaller,        // ← C’est ici qu’on met 33612345678
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -74,16 +71,14 @@ export default function PSTNPhone() {
             setTimeout(() => playRingtone(480, 1000), 1200);
           }
         }
-      } catch (err) {
-        // Erreurs silencieuses (timeout, réseau, etc.)
-      }
-    }, 10000);
+      } catch (err) {}
+    }, 8000);   // 8 secondes
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, currentCall]);
+  }, [step, myNumber, targetNumber, currentCall]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -106,21 +101,14 @@ export default function PSTNPhone() {
 
     try {
       if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
-
       const binaryString = atob(base64);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-
       const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
       const url = URL.createObjectURL(blob);
 
-      const audio = playbackAudioRef.current;
-      audio.src = url;
-      audio.volume = 1.0;
-      audio.load();
-      audio.play().catch(err => {
-        if (err.name === 'AbortError' || err.name === 'NotAllowedError') setShowManualPlay(true);
-      });
+      playbackAudioRef.current.src = url;
+      playbackAudioRef.current.play().catch(() => setShowManualPlay(true));
     } catch (err) {
       console.error('❌ Erreur atob:', err.message);
     }
@@ -129,7 +117,7 @@ export default function PSTNPhone() {
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+        audio: { echoCancellation: true, noiseSuppression: true } 
       });
       mediaStreamRef.current = stream;
       console.log('✅ Microphone activé');
@@ -142,20 +130,12 @@ export default function PSTNPhone() {
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
 
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size === 0 || !callId) return;
+        if (event.data.size === 0) return;
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1];
           if (base64) {
-            const response = await dialer.sendAudioData(
-              callId, 
-              base64, 
-              Date.now(), 
-              myNumber, 
-              currentCall?.called || targetNumber
-            );
-            const audioBase64 = response?.data?.payload?.base64 || response?.data?.audioData;
-            if (audioBase64) playAudioFromBase64(audioBase64);
+            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
           }
         };
         reader.readAsDataURL(event.data);
@@ -207,8 +187,6 @@ export default function PSTNPhone() {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       const callId = res.data?.callId || `call-${Date.now()}`;
 
-      console.log(`📤 Appel initié de ${myNumber} vers ${targetNumber} - CallId: ${callId}`);
-
       const call: CallSession = {
         id: callId,
         caller: myNumber,
@@ -231,10 +209,7 @@ export default function PSTNPhone() {
   const answerCall = async () => {
     if (!currentCall) return;
     try {
-      await dialer.answerCall(currentCall.id, { 
-        callerNumber: myNumber, 
-        calledNumber: currentCall.caller 
-      });
+      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       startDurationTimer();
     } catch (e) {
@@ -257,7 +232,6 @@ export default function PSTNPhone() {
           <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-10 text-center">
             <div className="text-7xl mb-8">☎️</div>
             <h1 className="text-4xl font-bold mb-3">PSTN Dialer</h1>
-            <p className="text-gray-300 mb-10">Entrez votre numéro</p>
             <input
               type="tel"
               value={myNumber}
@@ -276,16 +250,7 @@ export default function PSTNPhone() {
                 <p className="text-sm text-gray-400">Connecté en tant que</p>
                 <p className="font-mono text-xl">{myNumber}</p>
               </div>
-              <button 
-                onClick={() => { 
-                  setStep('login'); 
-                  setCurrentCall(null); 
-                  stopAudioCapture(); 
-                }} 
-                className="text-red-400 hover:text-red-300"
-              >
-                Déconnexion
-              </button>
+              <button onClick={() => { setStep('login'); setCurrentCall(null); stopAudioCapture(); }} className="text-red-400">Déconnexion</button>
             </div>
 
             {!currentCall ? (
@@ -297,13 +262,10 @@ export default function PSTNPhone() {
                     value={targetNumber}
                     onChange={(e) => setTargetNumber(e.target.value)}
                     className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
-                    placeholder="Numéro distant"
+                    placeholder="33612345678"
                   />
                 </div>
-                <button 
-                  onClick={makeOutboundCall} 
-                  className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold"
-                >
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
                   📞 Appeler
                 </button>
               </div>
@@ -332,15 +294,6 @@ export default function PSTNPhone() {
                       <div className="bg-green-500 h-full transition-all" style={{ width: `${Math.min(audioLevel / 2.55, 100)}%` }} />
                     </div>
                   </div>
-                )}
-
-                {showManualPlay && (
-                  <button 
-                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} 
-                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
-                  >
-                    ▶️ Jouer l'audio manuellement
-                  </button>
                 )}
 
                 <div className="space-y-4">
