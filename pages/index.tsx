@@ -49,14 +49,16 @@ export default function PSTNPhone() {
         if (res?.success && res?.data) {
           const d = res.data;
 
-          let caller = d.call?.caller || d.caller || d.call?.called || 'unknown';
-          let callId = d.callId || (d.call && d.call.callId) || `in-${Date.now()}`;
+          // Extraction du caller
+          let caller = d.call?.caller || d.caller || 'unknown';
 
-          // FORCE le caller avec le numéro distant si l'Oracle renvoie "unknown" ou le même numéro
+          // CORRECTION FINALE : si l'Oracle renvoie le même numéro ou "unknown", on prend le targetNumber (le vrai distant)
           if (caller === 'unknown' || caller === '' || caller === myNumber || caller === d.call?.called) {
             caller = targetNumber;
             console.log(`🔄 Correction caller : Oracle a renvoyé "${d.call?.caller || 'unknown'}" → on force le numéro distant : ${caller}`);
           }
+
+          const callId = d.callId || `in-${Date.now()}`;
 
           console.log(`📊 Extrait → Caller: "${caller}" | Called: "${d.call?.called}" | CallId: ${callId}`);
 
@@ -79,7 +81,7 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {
-        // Ignore silencieusement les erreurs réseau
+        // On ignore silencieusement les erreurs réseau
       }
     }, 10000);
 
