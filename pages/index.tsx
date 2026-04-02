@@ -40,6 +40,8 @@ export default function PSTNPhone() {
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
+    console.log(`🔄 Polling activé pour ${myNumber}`);
+
     pollingInterval.current = setInterval(async () => {
       try {
         const res = await dialer.checkIncomingCalls(myNumber);
@@ -50,9 +52,9 @@ export default function PSTNPhone() {
 
           console.log(`📊 Extrait brut Oracle → Caller: "${oracleCaller}" | Called: "${d.call?.called || myNumber}"`);
 
-          // Protection importante : on ignore si l'appelant est nous-même ou unknown
+          // Protection : ignorer si c'est nous-même ou unknown
           if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
-            const realCaller = oracleCaller;   // On prend ce que l'Oracle donne (si ce n'est plus unknown)
+            const realCaller = oracleCaller; // On prend ce que donne l'Oracle
 
             console.log(`✅ VRAI APPEL ENTRANT → De ${realCaller}`);
 
@@ -69,28 +71,152 @@ export default function PSTNPhone() {
             setCurrentCall(incomingCall);
             playRingtone(400, 800);
             setTimeout(() => playRingtone(480, 1000), 1200);
+          } 
+          // Si l'Oracle renvoie "unknown", on utilise le targetNumber comme fallback pour l'affichage
+          else if (!currentCall && oracleCaller === 'unknown') {
+            const realCaller = targetNumber;
+
+            console.log(`⚠️ Oracle a renvoyé unknown → On affiche De ${realCaller} (fallback)`);
+
+            const incomingCall: CallSession = {
+              id: d.callId || `in-${Date.now()}`,
+              caller: realCaller,
+              called: myNumber,
+              direction: 'inbound',
+              status: 'ringing',
+              duration: 0,
+              startTime: new Date(),
+            };
+
+            setCurrentCall(incomingCall);
+            playRingtone(400, 800);
+            setTimeout(() => playRingtone(480, 1000), 1200);
           }
         }
-      } catch (err) {}
+      } catch (err) {
+        // Erreurs silencieuses (timeout, etc.)
+      }
     }, 8000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, currentCall]);
+  }, [step, myNumber, targetNumber, currentCall]);
 
-  // Le reste du code (audio, ringtone, answer, hangup, etc.) reste identique
-  // ... (copie le reste du code de la version précédente pour startAudioCapture, playAudioFromBase64, makeOutboundCall, answerCall, hangupCall, etc.)
+  const startDurationTimer = () => {
+    stopDurationTimer();
+    durationInterval.current = setInterval(() => {
+      setCurrentCall(prev => prev && prev.status === 'answered' 
+        ? { ...prev, duration: prev.duration + 1 } 
+        : prev
+      );
+    }, 1000);
+  };
 
-  // Pour ne pas tout recopier, je te donne seulement les parties modifiées. 
-  // Garde tout le reste du fichier précédent (les fonctions audio, timers, UI, etc.)
+  const stopDurationTimer = () => {
+    if (durationInterval.current) clearInterval(durationInterval.current);
+  };
+
+  const playAudioFromBase64 = useCallback((input: any) => {
+    if (!playbackAudioRef.current || !input) return;
+    let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+    if (base64.length < 20) return;
+
+    try {
+      if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
+
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+
+      const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
+      const url = URL.createObjectURL(blob);
+
+      const audio = playbackAudioRef.current;
+      audio.src = url;
+      audio.volume = 1.0;
+      audio.load();
+      audio.play().catch(() => setShowManualPlay(true));
+    } catch (err) {
+      console.error('❌ Erreur atob:', err.message);
+    }
+  }, []);
+
+  const startAudioCapture = async (callId: string) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+      });
+      mediaStreamRef.current = stream;
+      console.log('✅ Microphone activé');
+
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = ctx;
+      analyzerRef.current = ctx.createAnalyser();
+      ctx.createMediaStreamSource(stream).connect(analyzerRef.current);
+
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+      mediaRecorderRef.current.ondataavailable = async (event) => {
+        if (event.data.size === 0 || !callId) return;
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = (reader.result as string)?.split(',')[1];
+          if (base64) {
+            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
+          }
+        };
+        reader.readAsDataURL(event.data);
+      };
+
+      mediaRecorderRef.current.start(250);
+      setIsRecording(true);
+
+      const analyze = () => {
+        if (!analyzerRef.current) return;
+        const data = new Uint8Array(analyzerRef.current.frequencyBinCount);
+        analyzerRef.current.getByteFrequencyData(data);
+        setAudioLevel(Math.round(data.reduce((a, b) => a + b, 0) / data.length));
+        animationFrameRef.current = requestAnimationFrame(analyze);
+      };
+      analyze();
+    } catch (err) {
+      console.error('❌ Erreur micro', err);
+    }
+  };
+
+  const stopAudioCapture = () => {
+    mediaRecorderRef.current?.stop();
+    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    setIsRecording(false);
+  };
+
+  const playRingtone = (freq: number, duration: number) => {
+    try {
+      const ctx = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.value = 0.3;
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + duration / 1000);
+    } catch {}
+  };
+
+  const login = () => setStep('phone');
 
   const makeOutboundCall = async () => {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
     try {
       const res = await dialer.initiateCall(myNumber, targetNumber);
       const callId = res.data?.callId || `call-${Date.now()}`;
+
+      console.log(`📤 Appel initié de ${myNumber} vers ${targetNumber}`);
 
       const call: CallSession = {
         id: callId,
@@ -137,6 +263,7 @@ export default function PSTNPhone() {
           <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-10 text-center">
             <div className="text-7xl mb-8">☎️</div>
             <h1 className="text-4xl font-bold mb-3">PSTN Dialer</h1>
+            <p className="text-gray-300 mb-10">Entrez votre numéro</p>
             <input
               type="tel"
               value={myNumber}
@@ -167,7 +294,7 @@ export default function PSTNPhone() {
                     value={targetNumber}
                     onChange={(e) => setTargetNumber(e.target.value)}
                     className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
-                    placeholder="33612345678"
+                    placeholder="Numéro distant"
                   />
                 </div>
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
@@ -199,6 +326,15 @@ export default function PSTNPhone() {
                       <div className="bg-green-500 h-full transition-all" style={{ width: `${Math.min(audioLevel / 2.55, 100)}%` }} />
                     </div>
                   </div>
+                )}
+
+                {showManualPlay && (
+                  <button 
+                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} 
+                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
+                  >
+                    ▶️ Jouer l'audio manuellement
+                  </button>
                 )}
 
                 <div className="space-y-4">
