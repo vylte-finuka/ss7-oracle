@@ -23,8 +23,8 @@ const ABI = [
 
 const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
 
-// Stockage temporaire des appels en cours (serverless-friendly)
-const pendingCalls = new Map<string, { caller: string; called: string }>();
+// Stockage global des appels en cours (serverless-friendly)
+const pendingCalls = new Map<string, { caller: string; called: string; timestamp: number }>();
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
@@ -45,47 +45,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const callType = (body.callType || "voice").toString();
     const callId = body.callId || `call-${Date.now()}`;
 
-    console.log(`📥 Requête reçue : caller=${callerNumber} | called=${calledNumber} | status=${status}`);
+    console.log(`📥 Requête reçue → caller="${callerNumber}" | called="${calledNumber}" | status="${status}"`);
 
-    // === POLLING DES APPELS ENTRANTS ===
-    if (status === "INITIATED" && !callerNumber) {
-      // C’est un polling checkIncomingCalls
+    // ====================== POLLING checkIncomingCalls ======================
+    if (status === "INITIATED" && !callerNumber && calledNumber) {
       const pending = pendingCalls.get(calledNumber);
       if (pending) {
-        console.log(`✅ Appel entrant trouvé pour ${calledNumber} → caller réel = ${pending.caller}`);
+        console.log(`✅ APPEL ENTRANT TROUVÉ → caller="${pending.caller}" | called="${calledNumber}"`);
+
         return res.status(200).json({
           success: true,
           data: {
             callId: callId,
             call: {
-              caller: pending.caller,
+              caller: pending.caller,   // ← VRAI NUMÉRO
               called: calledNumber,
               status: "INITIATED",
             },
           },
-          message: "✅ Appel entrant détecté avec vrai caller",
+          message: "✅ Appel entrant avec vrai caller",
         });
+      } else {
+        console.log(`⚠️ Aucun appel entrant trouvé pour ${calledNumber}`);
       }
     }
 
-    // === INITIATION D'UN NOUVEL APPEL ===
+    // ====================== INITIATE CALL (appel sortant) ======================
     if (status === "INITIATED" && callerNumber && calledNumber) {
-      // On enregistre l’appel pour que le polling le retrouve
-      pendingCalls.set(calledNumber, { caller: callerNumber, called: calledNumber });
-      console.log(`📌 Appel enregistré : ${callerNumber} → ${calledNumber}`);
+      pendingCalls.set(calledNumber, {
+        caller: callerNumber,
+        called: calledNumber,
+        timestamp: Date.now(),
+      });
+      console.log(`📌 Appel enregistré en attente → ${callerNumber} → ${calledNumber}`);
     }
 
-    // Nettoyage après 30 secondes (optionnel)
+    // Nettoyage automatique après 30 secondes
     setTimeout(() => pendingCalls.delete(calledNumber), 30000);
 
-    // === GÉNÉRATION SS7 (simplifiée) ===
+    // ====================== Réponse SS7 simplifiée ======================
     const timestamp = BigInt(body.timestamp || Math.floor(Date.now() / 1000));
     const callerHash = BigInt("0x" + ethers.id(callerNumber || "unknown").slice(2, 18));
     const calledHash = BigInt("0x" + ethers.id(calledNumber || "unknown").slice(2, 18));
 
     const payloadHex = "0x010b" + Buffer.from(callerNumber + calledNumber).toString("hex");
 
-    // Fire-and-forget (pas de .wait() pour éviter timeout)
+    // Fire-and-forget (pas de .wait() pour éviter timeout Netlify)
     let txHash = null;
     try {
       const tx = await contract.initiateCall(
@@ -93,11 +98,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         { gasLimit: 400000 }
       );
       txHash = tx.hash;
-    } catch (e) {
-      console.warn("⚠️ initiateCall warning:", e.message);
+    } catch (e: any) {
+      console.warn("⚠️ initiateCall warning (non bloquant):", e.message);
     }
 
-    const response = {
+    return res.status(200).json({
       success: true,
       data: {
         version: "1.0",
@@ -114,11 +119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         blockchain: { txHashInitiate: txHash },
       },
       message: "✅ Oracle a capturé les vrais numéros",
-    };
-
-    console.log(`✅ Réponse Oracle → caller: ${callerNumber} | called: ${calledNumber}`);
-
-    return res.status(200).json(response);
+    });
   } catch (err: any) {
     console.error("🔥 ERREUR ORACLE:", err.message);
     return res.status(500).json({ success: false, error: err.message });
