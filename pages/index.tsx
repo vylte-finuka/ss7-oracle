@@ -36,11 +36,9 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== POLLING - APPEL ENTRANT ====================
+  // Polling
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
-
-    console.log(`🔄 Polling activé pour ${myNumber}`);
 
     pollingInterval.current = setInterval(async () => {
       try {
@@ -48,18 +46,23 @@ export default function PSTNPhone() {
 
         if (res?.success && res?.data) {
           const d = res.data;
-          let oracleCaller = (d.call?.caller || d.caller || 'unknown').toString().trim();
+          const oracleCaller = (d.call?.caller || d.caller || 'unknown').toString().trim();
+          const oracleStatus = (d.call?.status || d.status || 'INITIATED').toString().toUpperCase();
 
-          console.log(`📊 Extrait brut Oracle → Caller: "${oracleCaller}" | Called: "${d.call?.called || myNumber}"`);
+          console.log(`📊 Oracle → Caller: "${oracleCaller}" | Status: ${oracleStatus}`);
 
-          // RÈGLE STRICTE : On ne déclenche JAMAIS un appel entrant dans l'onglet de l'appelant
-          // On accepte uniquement si le caller est différent de notre numéro
+          if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
+            console.log(`✅ L'autre partie a décroché → Passage en communication`);
+            setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+            startDurationTimer();
+          }
+
           if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
-            console.log(`✅ VRAI APPEL ENTRANT DÉTECTÉ → De ${oracleCaller} vers ${myNumber}`);
+            console.log(`✅ Appel entrant de ${oracleCaller}`);
 
             const incomingCall: CallSession = {
               id: d.callId || `in-${Date.now()}`,
-              caller: oracleCaller,           // Le vrai numéro qui appelle
+              caller: oracleCaller,
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -73,9 +76,9 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {
-        // Erreurs silencieuses
+        console.log("Polling error (normal en dev)", err.message);
       }
-    }, 8000);
+    }, 4000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -85,11 +88,13 @@ export default function PSTNPhone() {
 
   const startDurationTimer = () => {
     stopDurationTimer();
+    console.log("⏱️ Timer démarré");
+
     durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => prev && prev.status === 'answered' 
-        ? { ...prev, duration: prev.duration + 1 } 
-        : prev
-      );
+      setCurrentCall(prev => {
+        if (!prev || prev.status !== 'answered') return prev;
+        return { ...prev, duration: prev.duration + 1 };
+      });
     }, 1000);
   };
 
@@ -219,8 +224,12 @@ export default function PSTNPhone() {
     if (!currentCall) return;
     try {
       await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
+
       setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
       startDurationTimer();
+      await startAudioCapture(currentCall.id);
+
+      console.log(`✅ Décroché - Timer lancé + Audio activé`);
     } catch (e) {
       console.error(e);
     }
