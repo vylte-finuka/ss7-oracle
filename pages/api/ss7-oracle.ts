@@ -23,8 +23,8 @@ const ABI = [
 
 const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
 
-// Stockage global des appels en cours (serverless-friendly)
-const pendingCalls = new Map<string, { caller: string; called: string; timestamp: number }>();
+// Stockage des appels en cours (fonctionne même en serverless)
+const pendingCalls = new Map<string, { caller: string; called: string }>();
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
@@ -43,80 +43,64 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const calledNumber = (body.calledNumber || body.called || "").toString().trim();
     const status = (body.status || "QUEUED").toString().toUpperCase();
     const callType = (body.callType || "voice").toString();
-    const callId = body.callId || `call-${Date.now()}`;
 
     console.log(`📥 Requête reçue → caller="${callerNumber}" | called="${calledNumber}" | status="${status}"`);
 
-    // ====================== POLLING checkIncomingCalls ======================
+    // ==================== POLLING checkIncomingCalls ====================
     if (status === "INITIATED" && !callerNumber && calledNumber) {
       const pending = pendingCalls.get(calledNumber);
       if (pending) {
-        console.log(`✅ APPEL ENTRANT TROUVÉ → caller="${pending.caller}" | called="${calledNumber}"`);
-
+        console.log(`✅ APPEL ENTRANT TROUVÉ → caller="${pending.caller}" (vrai numéro)`);
         return res.status(200).json({
           success: true,
           data: {
-            callId: callId,
+            callId: body.callId || `in-${Date.now()}`,
             call: {
               caller: pending.caller,   // ← VRAI NUMÉRO
               called: calledNumber,
               status: "INITIATED",
             },
           },
-          message: "✅ Appel entrant avec vrai caller",
+          message: "✅ Oracle a capturé le vrai caller",
         });
-      } else {
-        console.log(`⚠️ Aucun appel entrant trouvé pour ${calledNumber}`);
       }
     }
 
-    // ====================== INITIATE CALL (appel sortant) ======================
+    // ==================== INITIATE CALL (appel sortant) ====================
     if (status === "INITIATED" && callerNumber && calledNumber) {
-      pendingCalls.set(calledNumber, {
-        caller: callerNumber,
-        called: calledNumber,
-        timestamp: Date.now(),
-      });
-      console.log(`📌 Appel enregistré en attente → ${callerNumber} → ${calledNumber}`);
+      pendingCalls.set(calledNumber, { caller: callerNumber, called: calledNumber });
+      console.log(`📌 Appel enregistré → ${callerNumber} → ${calledNumber}`);
     }
 
-    // Nettoyage automatique après 30 secondes
+    // Nettoyage automatique
     setTimeout(() => pendingCalls.delete(calledNumber), 30000);
 
-    // ====================== Réponse SS7 simplifiée ======================
+    // Réponse SS7 simple
     const timestamp = BigInt(body.timestamp || Math.floor(Date.now() / 1000));
     const callerHash = BigInt("0x" + ethers.id(callerNumber || "unknown").slice(2, 18));
     const calledHash = BigInt("0x" + ethers.id(calledNumber || "unknown").slice(2, 18));
 
     const payloadHex = "0x010b" + Buffer.from(callerNumber + calledNumber).toString("hex");
 
-    // Fire-and-forget (pas de .wait() pour éviter timeout Netlify)
+    // Fire-and-forget
     let txHash = null;
     try {
-      const tx = await contract.initiateCall(
-        0xec, 0x01, callerHash, calledHash, timestamp, 0n, payloadHex,
-        { gasLimit: 400000 }
-      );
+      const tx = await contract.initiateCall(0xec, 0x01, callerHash, calledHash, timestamp, 0n, payloadHex, { gasLimit: 400000 });
       txHash = tx.hash;
-    } catch (e: any) {
-      console.warn("⚠️ initiateCall warning (non bloquant):", e.message);
+    } catch (e) {
+      console.warn("⚠️ initiateCall warning:", e.message);
     }
 
     return res.status(200).json({
       success: true,
       data: {
-        version: "1.0",
-        callId: callId,
+        callId: `call-${Date.now()}`,
         call: {
           caller: callerNumber || "unknown",
           called: calledNumber || "unknown",
           status: status,
         },
-        payload: {
-          hex: payloadHex,
-          base64: Buffer.from(payloadHex.slice(2), "hex").toString("base64"),
-        },
-        blockchain: { txHashInitiate: txHash },
+        payload: { hex: payloadHex },
       },
       message: "✅ Oracle a capturé les vrais numéros",
     });
