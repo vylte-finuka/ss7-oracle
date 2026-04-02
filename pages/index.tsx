@@ -36,7 +36,7 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // ==================== POLLING ====================
+  // ==================== POLLING - APPEL ENTRANT ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -48,39 +48,18 @@ export default function PSTNPhone() {
 
         if (res?.success && res?.data) {
           const d = res.data;
-          let oracleCaller = d.call?.caller || d.caller || 'unknown';
+          let oracleCaller = (d.call?.caller || d.caller || 'unknown').toString().trim();
 
           console.log(`📊 Extrait brut Oracle → Caller: "${oracleCaller}" | Called: "${d.call?.called || myNumber}"`);
 
-          // Protection : ignorer si c'est nous-même ou unknown
+          // RÈGLE STRICTE : On ne déclenche JAMAIS un appel entrant dans l'onglet de l'appelant
+          // On accepte uniquement si le caller est différent de notre numéro
           if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
-            const realCaller = oracleCaller; // On prend ce que donne l'Oracle
-
-            console.log(`✅ VRAI APPEL ENTRANT → De ${realCaller}`);
+            console.log(`✅ VRAI APPEL ENTRANT DÉTECTÉ → De ${oracleCaller} vers ${myNumber}`);
 
             const incomingCall: CallSession = {
               id: d.callId || `in-${Date.now()}`,
-              caller: realCaller,
-              called: myNumber,
-              direction: 'inbound',
-              status: 'ringing',
-              duration: 0,
-              startTime: new Date(),
-            };
-
-            setCurrentCall(incomingCall);
-            playRingtone(400, 800);
-            setTimeout(() => playRingtone(480, 1000), 1200);
-          } 
-          // Si l'Oracle renvoie "unknown", on utilise le targetNumber comme fallback pour l'affichage
-          else if (!currentCall && oracleCaller === 'unknown') {
-            const realCaller = targetNumber;
-
-            console.log(`⚠️ Oracle a renvoyé unknown → On affiche De ${realCaller} (fallback)`);
-
-            const incomingCall: CallSession = {
-              id: d.callId || `in-${Date.now()}`,
-              caller: realCaller,
+              caller: oracleCaller,           // Le vrai numéro qui appelle
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -94,7 +73,7 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {
-        // Erreurs silencieuses (timeout, etc.)
+        // Erreurs silencieuses
       }
     }, 8000);
 
@@ -102,7 +81,7 @@ export default function PSTNPhone() {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, targetNumber, currentCall]);
+  }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
     stopDurationTimer();
@@ -125,7 +104,6 @@ export default function PSTNPhone() {
 
     try {
       if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
-
       const binaryString = atob(base64);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
