@@ -15,8 +15,8 @@ interface CallSession {
 
 export default function PSTNPhone() {
   const [step, setStep] = useState<'login' | 'phone'>('login');
-  const [myNumber, setMyNumber] = useState<string>('33987654321');   // Change ici si tu veux
-  const [targetNumber, setTargetNumber] = useState<string>('33612345678');
+  const [myNumber, setMyNumber] = useState<string>('33612345678');
+  const [targetNumber, setTargetNumber] = useState<string>('33987654321');
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -50,15 +50,15 @@ export default function PSTNPhone() {
 
           console.log(`📊 Extrait brut Oracle → Caller: "${oracleCaller}" | Called: "${d.call?.called || myNumber}"`);
 
-          if (!currentCall && oracleCaller !== myNumber) {
-            // FORCE le caller avec le numéro distant (celui qui appelle)
-            const realCaller = (oracleCaller === 'unknown') ? targetNumber : oracleCaller;
+          // Protection importante : on ignore si l'appelant est nous-même ou unknown
+          if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
+            const realCaller = oracleCaller;   // On prend ce que l'Oracle donne (si ce n'est plus unknown)
 
-            console.log(`✅ APPEL ENTRANT → On affiche De ${realCaller}`);
+            console.log(`✅ VRAI APPEL ENTRANT → De ${realCaller}`);
 
             const incomingCall: CallSession = {
               id: d.callId || `in-${Date.now()}`,
-              caller: realCaller,        // ← C’est ici qu’on met 33612345678
+              caller: realCaller,
               called: myNumber,
               direction: 'inbound',
               status: 'ringing',
@@ -72,114 +72,19 @@ export default function PSTNPhone() {
           }
         }
       } catch (err) {}
-    }, 8000);   // 8 secondes
+    }, 8000);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
       stopDurationTimer();
     };
-  }, [step, myNumber, targetNumber, currentCall]);
+  }, [step, myNumber, currentCall]);
 
-  const startDurationTimer = () => {
-    stopDurationTimer();
-    durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => prev && prev.status === 'answered' 
-        ? { ...prev, duration: prev.duration + 1 } 
-        : prev
-      );
-    }, 1000);
-  };
+  // Le reste du code (audio, ringtone, answer, hangup, etc.) reste identique
+  // ... (copie le reste du code de la version précédente pour startAudioCapture, playAudioFromBase64, makeOutboundCall, answerCall, hangupCall, etc.)
 
-  const stopDurationTimer = () => {
-    if (durationInterval.current) clearInterval(durationInterval.current);
-  };
-
-  const playAudioFromBase64 = useCallback((input: any) => {
-    if (!playbackAudioRef.current || !input) return;
-    let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-    if (base64.length < 20) return;
-
-    try {
-      if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
-      const url = URL.createObjectURL(blob);
-
-      playbackAudioRef.current.src = url;
-      playbackAudioRef.current.play().catch(() => setShowManualPlay(true));
-    } catch (err) {
-      console.error('❌ Erreur atob:', err.message);
-    }
-  }, []);
-
-  const startAudioCapture = async (callId: string) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true } 
-      });
-      mediaStreamRef.current = stream;
-      console.log('✅ Microphone activé');
-
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = ctx;
-      analyzerRef.current = ctx.createAnalyser();
-      ctx.createMediaStreamSource(stream).connect(analyzerRef.current);
-
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-
-      mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size === 0) return;
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64 = (reader.result as string)?.split(',')[1];
-          if (base64) {
-            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
-          }
-        };
-        reader.readAsDataURL(event.data);
-      };
-
-      mediaRecorderRef.current.start(250);
-      setIsRecording(true);
-
-      const analyze = () => {
-        if (!analyzerRef.current) return;
-        const data = new Uint8Array(analyzerRef.current.frequencyBinCount);
-        analyzerRef.current.getByteFrequencyData(data);
-        setAudioLevel(Math.round(data.reduce((a, b) => a + b, 0) / data.length));
-        animationFrameRef.current = requestAnimationFrame(analyze);
-      };
-      analyze();
-    } catch (err) {
-      console.error('❌ Erreur micro', err);
-    }
-  };
-
-  const stopAudioCapture = () => {
-    mediaRecorderRef.current?.stop();
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    setIsRecording(false);
-  };
-
-  const playRingtone = (freq: number, duration: number) => {
-    try {
-      const ctx = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.value = 0.3;
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + duration / 1000);
-    } catch {}
-  };
-
-  const login = () => setStep('phone');
+  // Pour ne pas tout recopier, je te donne seulement les parties modifiées. 
+  // Garde tout le reste du fichier précédent (les fonctions audio, timers, UI, etc.)
 
   const makeOutboundCall = async () => {
     if (!targetNumber) return alert("Entrez un numéro à appeler");
