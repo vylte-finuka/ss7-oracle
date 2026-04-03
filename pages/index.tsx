@@ -230,7 +230,7 @@ export default function PSTNPhone() {
       <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
           <div className="text-center">
-            <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
+            <h1 className="text-5xl mb-8">☎️ Hotline dialer </h1>
             <input
               type="tel"
               value={myNumber}
