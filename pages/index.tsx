@@ -15,13 +15,13 @@ interface CallSession {
 
 export default function PSTNPhone() {
   const [step, setStep] = useState<'login' | 'phone'>('login');
-  const [myNumber, setMyNumber] = useState<string>('33612345678');
-  const [targetNumber, setTargetNumber] = useState<string>('33987654321');
+  const [myNumber, setMyNumber] = useState('33612345678');
+  const [targetNumber, setTargetNumber] = useState('33987654321');
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
   const [showSoundButton, setShowSoundButton] = useState(false);
 
   const [dialer] = useState(() => new PSTNDialer({
-    baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || 'https://ton-domaine.netlify.app',
+    baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || '',
     apiKey: process.env.NEXT_PUBLIC_ORACLE_API_KEY || 'test-key-default',
   }));
 
@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling plus rapide en prod
+  // ==================== POLLING ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -51,6 +51,7 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
+        // Nouvel appel entrant
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           setCurrentCall({
             id: d.callId || `in-${Date.now()}`,
@@ -63,56 +64,79 @@ export default function PSTNPhone() {
           });
         }
 
+        // Passage en communication
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
           startDurationTimer();
           startAudioCapture(currentCall.id);
         }
 
+        // Audio reçu de l'autre côté
         const receivedAudio = d.audioData || d.data?.audioData;
-        if (receivedAudio && receivedAudio.length > 40) {
+        if (receivedAudio && receivedAudio.length > 50) {
+          console.log(`🎵 AUDIO REÇU (${receivedAudio.length} chars)`);
           playReceivedAudio(receivedAudio);
         }
-      } catch (err) {}
-    }, 600); // 600ms → bien plus fluide en prod
+      } catch (e) {
+        console.error("Polling error", e);
+      }
+    }, 500); // 500ms → très réactif en prod
 
-    return () => { if (pollingInterval.current) clearInterval(pollingInterval.current); };
+    return () => {
+      if (pollingInterval.current) clearInterval(pollingInterval.current);
+    };
   }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
     if (durationInterval.current) clearInterval(durationInterval.current);
     durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => prev && prev.status === 'answered' 
-        ? { ...prev, duration: prev.duration + 1 } 
-        : prev);
+      setCurrentCall(prev => 
+        prev && prev.status === 'answered' 
+          ? { ...prev, duration: prev.duration + 1 } 
+          : prev
+      );
     }, 1000);
   };
 
+  // ==================== CAPTURE MICRO ====================
   const startAudioCapture = async (callId: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 44100,
+        }
       });
       mediaStreamRef.current = stream;
 
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = new MediaRecorder(stream, { 
+        mimeType: 'audio/webm;codecs=opus' 
+      });
+
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size < 100) return;
+        if (event.data.size < 200) return;
+
         const reader = new FileReader();
         reader.onloadend = async () => {
-          let base64 = (reader.result as string)?.split(',')[1] || '';
+          const base64 = (reader.result as string)?.split(',')[1];
           if (base64) {
             await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
           }
         };
         reader.readAsDataURL(event.data);
       };
-      mediaRecorderRef.current.start(150); // chunk plus court = moins de latence
+
+      mediaRecorderRef.current.start(120); // chunk court pour faible latence
+      console.log("🎤 Micro démarré – envoi en cours");
     } catch (err) {
-      console.error(err);
+      console.error("Erreur micro :", err);
+      alert("Impossible d'accéder au micro. Vérifie les permissions.");
     }
   };
 
+  // ==================== LECTURE AUDIO ====================
   const playReceivedAudio = useCallback(async (base64Input: string) => {
     try {
       const ctx = getAudioContext();
@@ -120,10 +144,10 @@ export default function PSTNPhone() {
 
       let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
       const binary = atob(clean);
-      const arrayBuffer = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) arrayBuffer[i] = binary.charCodeAt(i);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-      const wavBuffer = createWAV(arrayBuffer.buffer);
+      const wavBuffer = createWAV(bytes.buffer);
 
       const audioBuffer = await ctx.decodeAudioData(wavBuffer);
       const source = ctx.createBufferSource();
@@ -131,20 +155,20 @@ export default function PSTNPhone() {
       source.connect(ctx.destination);
       source.start(0);
 
-      console.log('▶️ AUDIO RÉEL JOUÉ');
+      console.log("▶️ AUDIO REÇU ET JOUÉ CORRECTEMENT");
     } catch (err: any) {
-      console.error('Decode error:', err.message);
+      console.error("Erreur lecture audio :", err.message);
       setShowSoundButton(true);
     }
   }, [getAudioContext]);
 
-  const createWAV = (audioData: ArrayBuffer) => {
-    const buffer = new ArrayBuffer(44 + audioData.byteLength);
+  const createWAV = (rawData: ArrayBuffer) => {
+    const buffer = new ArrayBuffer(44 + rawData.byteLength);
     const view = new DataView(buffer);
 
     view.setUint32(0, 0x52494646, false); // RIFF
-    view.setUint32(4, 36 + audioData.byteLength, true);
-    view.setUint32(8, 0x57415645, false);
+    view.setUint32(4, 36 + rawData.byteLength, true);
+    view.setUint32(8, 0x57415645, false); // WAVE
     view.setUint32(12, 0x666d7420, false);
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
@@ -154,30 +178,35 @@ export default function PSTNPhone() {
     view.setUint16(32, 2, true);
     view.setUint16(34, 16, true);
     view.setUint32(36, 0x64617461, false);
-    view.setUint32(40, audioData.byteLength, true);
+    view.setUint32(40, rawData.byteLength, true);
 
-    new Uint8Array(buffer, 44).set(new Uint8Array(audioData));
+    new Uint8Array(buffer, 44).set(new Uint8Array(rawData));
     return buffer;
   };
 
   const enableSound = async () => {
     setShowSoundButton(false);
     await getAudioContext().resume();
+    console.log("🔊 AudioContext débloqué manuellement");
   };
 
   const makeOutboundCall = async () => {
-    const res = await dialer.initiateCall(myNumber, targetNumber);
-    const callId = res.data?.callId || `call-${Date.now()}`;
-    setCurrentCall({
-      id: callId,
-      caller: myNumber,
-      called: targetNumber,
-      direction: 'outbound',
-      status: 'ringing',
-      duration: 0,
-      startTime: new Date(),
-    });
-    startAudioCapture(callId);
+    try {
+      const res = await dialer.initiateCall(myNumber, targetNumber);
+      const callId = res.data?.callId || `call-${Date.now()}`;
+      setCurrentCall({
+        id: callId,
+        caller: myNumber,
+        called: targetNumber,
+        direction: 'outbound',
+        status: 'ringing',
+        duration: 0,
+        startTime: new Date(),
+      });
+      startAudioCapture(callId);
+    } catch (e: any) {
+      alert(e.message || "Erreur d'initiation");
+    }
   };
 
   const answerCall = async () => {
@@ -197,7 +226,7 @@ export default function PSTNPhone() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6 text-white font-sans">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6 text-white">
       <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
           <div className="text-center">
@@ -208,23 +237,29 @@ export default function PSTNPhone() {
               onChange={e => setMyNumber(e.target.value)}
               className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
             />
-            <button onClick={() => setStep('phone')} className="w-full bg-green-600 hover:bg-green-500 py-5 rounded-2xl text-xl font-bold">
+            <button 
+              onClick={() => setStep('phone')} 
+              className="w-full bg-green-600 hover:bg-green-500 py-5 rounded-2xl text-xl font-bold"
+            >
               Se connecter
             </button>
           </div>
         ) : (
           <>
-            <div className="flex justify-between items-center mb-10 bg-white/10 p-5 rounded-2xl">
+            <div className="flex justify-between mb-10 bg-white/10 p-5 rounded-2xl">
               <div>
-                <div className="text-gray-400 text-sm">Connecté en tant que</div>
+                <div className="text-gray-400 text-sm">Connecté :</div>
                 <div className="font-mono text-2xl">{myNumber}</div>
               </div>
-              <button onClick={() => { setStep('login'); hangupCall(); }} className="text-red-400 hover:text-red-300">Déconnexion</button>
+              <button onClick={() => { setStep('login'); hangupCall(); }} className="text-red-400">Déconnexion</button>
             </div>
 
             {showSoundButton && (
-              <button onClick={enableSound} className="w-full bg-yellow-600 py-4 rounded-2xl text-lg font-bold mb-8 shadow-xl">
-                🔊 ACTIVER LE SON MAINTENANT
+              <button 
+                onClick={enableSound} 
+                className="w-full bg-yellow-600 py-5 rounded-2xl text-lg font-bold mb-8"
+              >
+                🔊 ACTIVER LE SON (obligatoire)
               </button>
             )}
 
@@ -238,12 +273,12 @@ export default function PSTNPhone() {
                   placeholder="Numéro à appeler"
                 />
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
-                  📞 Lancer l'appel
+                  📞 Appeler
                 </button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-10 text-center">
-                <p className="text-3xl font-mono mb-4">
+                <p className="text-3xl font-mono mb-6">
                   {currentCall.direction === 'inbound' ? `De ${currentCall.caller}` : `Vers ${currentCall.called}`}
                 </p>
                 <p className="text-2xl mb-10">
@@ -251,7 +286,7 @@ export default function PSTNPhone() {
                 </p>
 
                 {currentCall.status === 'answered' && (
-                  <p className="text-6xl font-mono text-green-400 mb-12 tracking-widest">
+                  <p className="text-6xl font-mono text-green-400 mb-12">
                     {Math.floor(currentCall.duration / 60)}:{(currentCall.duration % 60).toString().padStart(2, '0')}
                   </p>
                 )}
