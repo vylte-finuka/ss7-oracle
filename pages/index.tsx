@@ -18,113 +18,75 @@ export default function PSTNPhone() {
   const [myNumber, setMyNumber] = useState<string>('33612345678');
   const [targetNumber, setTargetNumber] = useState<string>('33987654321');
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [showManualPlay, setShowManualPlay] = useState(false);
+  const [showSoundButton, setShowSoundButton] = useState(false);
 
   const [dialer] = useState(() => new PSTNDialer({
-    baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || 'http://localhost:3000',
+    baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || 'https://ton-domaine.netlify.app',
     apiKey: process.env.NEXT_PUBLIC_ORACLE_API_KEY || 'test-key-default',
   }));
 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const analyzerRef = useRef<AnalyserNode | null>(null);
-  const playbackAudioRef = useRef<HTMLAudioElement>(null);
-  const animationFrameRef = useRef<number | null>(null);
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // Polling
+  const getAudioContext = useCallback(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    return audioContextRef.current;
+  }, []);
+
+  // Polling plus rapide en prod
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
     pollingInterval.current = setInterval(async () => {
       try {
         const res = await dialer.checkIncomingCalls(myNumber);
+        if (!res?.success || !res?.data) return;
 
-        if (res?.success && res?.data) {
-          const d = res.data;
-          const oracleCaller = (d.call?.caller || d.caller || 'unknown').toString().trim();
-          const oracleStatus = (d.call?.status || d.status || 'INITIATED').toString().toUpperCase();
+        const d = res.data;
+        const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
+        const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
-          console.log(`📊 Oracle → Caller: "${oracleCaller}" | Status: ${oracleStatus}`);
-
-          if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
-            console.log(`✅ L'autre partie a décroché → Passage en communication`);
-            setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
-            startDurationTimer();
-          }
-
-          if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
-            console.log(`✅ Appel entrant de ${oracleCaller}`);
-
-            const incomingCall: CallSession = {
-              id: d.callId || `in-${Date.now()}`,
-              caller: oracleCaller,
-              called: myNumber,
-              direction: 'inbound',
-              status: 'ringing',
-              duration: 0,
-              startTime: new Date(),
-            };
-
-            setCurrentCall(incomingCall);
-            playRingtone(400, 800);
-            setTimeout(() => playRingtone(480, 1000), 1200);
-          }
+        if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
+          setCurrentCall({
+            id: d.callId || `in-${Date.now()}`,
+            caller: oracleCaller,
+            called: myNumber,
+            direction: 'inbound',
+            status: 'ringing',
+            duration: 0,
+            startTime: new Date(),
+          });
         }
-      } catch (err) {
-        console.log("Polling error (normal en dev)", err.message);
-      }
-    }, 4000);
 
-    return () => {
-      if (pollingInterval.current) clearInterval(pollingInterval.current);
-      stopDurationTimer();
-    };
+        if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
+          setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+          startDurationTimer();
+          startAudioCapture(currentCall.id);
+        }
+
+        const receivedAudio = d.audioData || d.data?.audioData;
+        if (receivedAudio && receivedAudio.length > 40) {
+          playReceivedAudio(receivedAudio);
+        }
+      } catch (err) {}
+    }, 600); // 600ms → bien plus fluide en prod
+
+    return () => { if (pollingInterval.current) clearInterval(pollingInterval.current); };
   }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
-    stopDurationTimer();
-    console.log("⏱️ Timer démarré");
-
+    if (durationInterval.current) clearInterval(durationInterval.current);
     durationInterval.current = setInterval(() => {
-      setCurrentCall(prev => {
-        if (!prev || prev.status !== 'answered') return prev;
-        return { ...prev, duration: prev.duration + 1 };
-      });
+      setCurrentCall(prev => prev && prev.status === 'answered' 
+        ? { ...prev, duration: prev.duration + 1 } 
+        : prev);
     }, 1000);
   };
-
-  const stopDurationTimer = () => {
-    if (durationInterval.current) clearInterval(durationInterval.current);
-  };
-
-  const playAudioFromBase64 = useCallback((input: any) => {
-    if (!playbackAudioRef.current || !input) return;
-    let base64 = String(input).trim().replace(/\s+/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-    if (base64.length < 20) return;
-
-    try {
-      if (playbackAudioRef.current.src.startsWith('blob:')) URL.revokeObjectURL(playbackAudioRef.current.src);
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-
-      const blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
-      const url = URL.createObjectURL(blob);
-
-      const audio = playbackAudioRef.current;
-      audio.src = url;
-      audio.volume = 1.0;
-      audio.load();
-      audio.play().catch(() => setShowManualPlay(true));
-    } catch (err) {
-      console.error('❌ Erreur atob:', err.message);
-    }
-  }, []);
 
   const startAudioCapture = async (callId: string) => {
     try {
@@ -132,196 +94,166 @@ export default function PSTNPhone() {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
       });
       mediaStreamRef.current = stream;
-      console.log('✅ Microphone activé');
 
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = ctx;
-      analyzerRef.current = ctx.createAnalyser();
-      ctx.createMediaStreamSource(stream).connect(analyzerRef.current);
-
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size === 0 || !callId) return;
+        if (event.data.size < 100) return;
         const reader = new FileReader();
         reader.onloadend = async () => {
-          const base64 = (reader.result as string)?.split(',')[1];
+          let base64 = (reader.result as string)?.split(',')[1] || '';
           if (base64) {
             await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
           }
         };
         reader.readAsDataURL(event.data);
       };
-
-      mediaRecorderRef.current.start(250);
-      setIsRecording(true);
-
-      const analyze = () => {
-        if (!analyzerRef.current) return;
-        const data = new Uint8Array(analyzerRef.current.frequencyBinCount);
-        analyzerRef.current.getByteFrequencyData(data);
-        setAudioLevel(Math.round(data.reduce((a, b) => a + b, 0) / data.length));
-        animationFrameRef.current = requestAnimationFrame(analyze);
-      };
-      analyze();
+      mediaRecorderRef.current.start(150); // chunk plus court = moins de latence
     } catch (err) {
-      console.error('❌ Erreur micro', err);
+      console.error(err);
     }
   };
 
-  const stopAudioCapture = () => {
-    mediaRecorderRef.current?.stop();
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    setIsRecording(false);
-  };
-
-  const playRingtone = (freq: number, duration: number) => {
+  const playReceivedAudio = useCallback(async (base64Input: string) => {
     try {
-      const ctx = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.value = 0.3;
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + duration / 1000);
-    } catch {}
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') await ctx.resume();
+
+      let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
+      const binary = atob(clean);
+      const arrayBuffer = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) arrayBuffer[i] = binary.charCodeAt(i);
+
+      const wavBuffer = createWAV(arrayBuffer.buffer);
+
+      const audioBuffer = await ctx.decodeAudioData(wavBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+
+      console.log('▶️ AUDIO RÉEL JOUÉ');
+    } catch (err: any) {
+      console.error('Decode error:', err.message);
+      setShowSoundButton(true);
+    }
+  }, [getAudioContext]);
+
+  const createWAV = (audioData: ArrayBuffer) => {
+    const buffer = new ArrayBuffer(44 + audioData.byteLength);
+    const view = new DataView(buffer);
+
+    view.setUint32(0, 0x52494646, false); // RIFF
+    view.setUint32(4, 36 + audioData.byteLength, true);
+    view.setUint32(8, 0x57415645, false);
+    view.setUint32(12, 0x666d7420, false);
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 44100, true);
+    view.setUint32(28, 88200, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    view.setUint32(36, 0x64617461, false);
+    view.setUint32(40, audioData.byteLength, true);
+
+    new Uint8Array(buffer, 44).set(new Uint8Array(audioData));
+    return buffer;
   };
 
-  const login = () => setStep('phone');
+  const enableSound = async () => {
+    setShowSoundButton(false);
+    await getAudioContext().resume();
+  };
 
   const makeOutboundCall = async () => {
-    if (!targetNumber) return alert("Entrez un numéro à appeler");
-    try {
-      const res = await dialer.initiateCall(myNumber, targetNumber);
-      const callId = res.data?.callId || `call-${Date.now()}`;
-
-      console.log(`📤 Appel initié de ${myNumber} vers ${targetNumber}`);
-
-      const call: CallSession = {
-        id: callId,
-        caller: myNumber,
-        called: targetNumber,
-        direction: 'outbound',
-        status: 'ringing',
-        duration: 0,
-        startTime: new Date(),
-      };
-      setCurrentCall(call);
-
-      await startAudioCapture(callId);
-      playRingtone(440, 1000);
-      setTimeout(() => playRingtone(480, 1000), 1500);
-    } catch (e: any) {
-      alert(e.message || "Erreur lors de l'appel");
-    }
+    const res = await dialer.initiateCall(myNumber, targetNumber);
+    const callId = res.data?.callId || `call-${Date.now()}`;
+    setCurrentCall({
+      id: callId,
+      caller: myNumber,
+      called: targetNumber,
+      direction: 'outbound',
+      status: 'ringing',
+      duration: 0,
+      startTime: new Date(),
+    });
+    startAudioCapture(callId);
   };
 
   const answerCall = async () => {
     if (!currentCall) return;
-    try {
-      await dialer.answerCall(currentCall.id, { callerNumber: myNumber, calledNumber: currentCall.caller });
-
-      setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
-      startDurationTimer();
-      await startAudioCapture(currentCall.id);
-
-      console.log(`✅ Décroché - Timer lancé + Audio activé`);
-    } catch (e) {
-      console.error(e);
-    }
+    await dialer.answerCall(currentCall.id, { callerNumber: currentCall.caller, calledNumber: myNumber });
+    setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+    startDurationTimer();
+    startAudioCapture(currentCall.id);
   };
 
   const hangupCall = () => {
-    stopAudioCapture();
-    stopDurationTimer();
+    mediaRecorderRef.current?.stop();
+    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+    if (durationInterval.current) clearInterval(durationInterval.current);
     setCurrentCall(null);
+    setShowSoundButton(false);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6 text-white">
-      <audio ref={playbackAudioRef} className="hidden" playsInline />
-
-      <div className="max-w-md mx-auto pt-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6 text-white font-sans">
+      <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
-          <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-10 text-center">
-            <div className="text-7xl mb-8">☎️</div>
-            <h1 className="text-4xl font-bold mb-3">PSTN Dialer</h1>
-            <p className="text-gray-300 mb-10">Entrez votre numéro</p>
+          <div className="text-center">
+            <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
             <input
               type="tel"
               value={myNumber}
-              onChange={(e) => setMyNumber(e.target.value)}
-              className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center mb-8"
-              placeholder="Votre numéro"
+              onChange={e => setMyNumber(e.target.value)}
+              className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
             />
-            <button onClick={login} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
+            <button onClick={() => setStep('phone')} className="w-full bg-green-600 hover:bg-green-500 py-5 rounded-2xl text-xl font-bold">
               Se connecter
             </button>
           </div>
         ) : (
-          <div>
-            <div className="flex justify-between items-center mb-8 bg-white/10 p-4 rounded-2xl">
+          <>
+            <div className="flex justify-between items-center mb-10 bg-white/10 p-5 rounded-2xl">
               <div>
-                <p className="text-sm text-gray-400">Connecté en tant que</p>
-                <p className="font-mono text-xl">{myNumber}</p>
+                <div className="text-gray-400 text-sm">Connecté en tant que</div>
+                <div className="font-mono text-2xl">{myNumber}</div>
               </div>
-              <button onClick={() => { setStep('login'); setCurrentCall(null); stopAudioCapture(); }} className="text-red-400">Déconnexion</button>
+              <button onClick={() => { setStep('login'); hangupCall(); }} className="text-red-400 hover:text-red-300">Déconnexion</button>
             </div>
+
+            {showSoundButton && (
+              <button onClick={enableSound} className="w-full bg-yellow-600 py-4 rounded-2xl text-lg font-bold mb-8 shadow-xl">
+                🔊 ACTIVER LE SON MAINTENANT
+              </button>
+            )}
 
             {!currentCall ? (
               <div className="space-y-6">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">Numéro à appeler</label>
-                  <input
-                    type="tel"
-                    value={targetNumber}
-                    onChange={(e) => setTargetNumber(e.target.value)}
-                    className="w-full bg-white/10 border border-gray-600 rounded-2xl px-6 py-5 text-2xl font-mono text-center"
-                    placeholder="Numéro distant"
-                  />
-                </div>
+                <input
+                  type="tel"
+                  value={targetNumber}
+                  onChange={e => setTargetNumber(e.target.value)}
+                  className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center"
+                  placeholder="Numéro à appeler"
+                />
                 <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
-                  📞 Appeler
+                  📞 Lancer l'appel
                 </button>
               </div>
             ) : (
-              <div className="bg-white/10 rounded-3xl p-8">
-                <p className="text-center text-3xl font-mono mb-6">
-                  {currentCall.direction === 'inbound' 
-                    ? `De ${currentCall.caller}` 
-                    : `Vers ${currentCall.called}`}
+              <div className="bg-white/10 rounded-3xl p-10 text-center">
+                <p className="text-3xl font-mono mb-4">
+                  {currentCall.direction === 'inbound' ? `De ${currentCall.caller}` : `Vers ${currentCall.called}`}
                 </p>
-
-                <p className="text-center text-2xl mb-8 font-semibold">
+                <p className="text-2xl mb-10">
                   {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
                 </p>
 
                 {currentCall.status === 'answered' && (
-                  <p className="text-center text-5xl font-mono text-green-400 mb-10">
+                  <p className="text-6xl font-mono text-green-400 mb-12 tracking-widest">
                     {Math.floor(currentCall.duration / 60)}:{(currentCall.duration % 60).toString().padStart(2, '0')}
                   </p>
-                )}
-
-                {isRecording && (
-                  <div className="mb-8">
-                    <p className="text-center text-gray-400 mb-2">Niveau micro</p>
-                    <div className="h-4 bg-gray-700 rounded-full overflow-hidden">
-                      <div className="bg-green-500 h-full transition-all" style={{ width: `${Math.min(audioLevel / 2.55, 100)}%` }} />
-                    </div>
-                  </div>
-                )}
-
-                {showManualPlay && (
-                  <button 
-                    onClick={() => playbackAudioRef.current?.play().then(() => setShowManualPlay(false))} 
-                    className="w-full bg-yellow-600 py-3 rounded-2xl text-white font-bold mb-4"
-                  >
-                    ▶️ Jouer l'audio manuellement
-                  </button>
                 )}
 
                 <div className="space-y-4">
@@ -336,7 +268,7 @@ export default function PSTNPhone() {
                 </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
