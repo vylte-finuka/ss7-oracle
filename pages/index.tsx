@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling rapide
+  // Polling
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -70,14 +70,18 @@ export default function PSTNPhone() {
         }
 
         const receivedAudio = d.audioData || d.data?.audioData;
-        if (receivedAudio && receivedAudio.length > 30) {
+        if (receivedAudio && receivedAudio.length > 40) {
           console.log(`🎵 AUDIO REÇU via oracle (${receivedAudio.length} chars)`);
           playReceivedAudio(receivedAudio);
         }
-      } catch (e) { console.error(e); }
-    }, 400); // très réactif
+      } catch (e) {
+        console.error("Polling error", e);
+      }
+    }, 450);
 
-    return () => { if (pollingInterval.current) clearInterval(pollingInterval.current); };
+    return () => {
+      if (pollingInterval.current) clearInterval(pollingInterval.current);
+    };
   }, [step, myNumber, currentCall]);
 
   const startDurationTimer = () => {
@@ -89,7 +93,6 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // Capture micro + encodage G.711 μ-law simulé (via resampling + simple companding)
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -97,29 +100,29 @@ export default function PSTNPhone() {
           echoCancellation: true, 
           noiseSuppression: true, 
           autoGainControl: true,
-          sampleRate: 8000 
+          sampleRate: 44100 
         }
       });
       mediaStreamRef.current = stream;
 
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size < 100) return;
+        if (event.data.size < 150) return;
 
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1] || '';
           if (base64) {
-            // Ici on pourrait ajouter un vrai encodeur G.711 si on veut aller plus loin
+            console.log(`📤 Envoi chunk audio vers oracle (${base64.length} chars)`);
             await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
           }
         };
         reader.readAsDataURL(event.data);
       };
-      mediaRecorderRef.current.start(100);
-      console.log("🎤 Micro capturé – flux envoyé via oracle");
+      mediaRecorderRef.current.start(120);
+      console.log("🎤 Capture micro démarrée – flux vers oracle");
     } catch (err) {
-      console.error("Micro :", err);
+      console.error("Erreur getUserMedia", err);
     }
   };
 
@@ -128,29 +131,69 @@ export default function PSTNPhone() {
       const ctx = getAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
 
-      const clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
-      const binary = atob(clean);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
+      const binaryString = atob(clean);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
 
-      // Décodage simple (on accepte webm ou raw pour l'instant)
-      const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+      // Création d'un WAV valide pour decodeAudioData
+      const wavBuffer = createWAV(bytes.buffer);
+
+      const audioBuffer = await ctx.decodeAudioData(wavBuffer);
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
       source.start(0);
 
-      console.log("▶️ AUDIO REÇU DU PAYLOAD ORACLE ET JOUÉ");
+      console.log("▶️ AUDIO REÇU DU PAYLOAD ORACLE ET JOUÉ AVEC SUCCÈS");
     } catch (err: any) {
-      console.error("Lecture audio :", err.message);
+      console.error("Lecture audio échouée :", err.message);
       setShowSoundButton(true);
     }
   }, [getAudioContext]);
 
+  // Fonction qui crée un header WAV valide autour des données audio
+  const createWAV = (rawAudioData: ArrayBuffer): ArrayBuffer => {
+    const numChannels = 1;
+    const sampleRate = 44100;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+
+    const buffer = new ArrayBuffer(44 + rawAudioData.byteLength);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(4, 36 + rawAudioData.byteLength, true);
+    view.setUint32(8, 0x57415645, false); // "WAVE"
+
+    // fmt subchunk
+    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // data subchunk
+    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint32(40, rawAudioData.byteLength, true);
+
+    // Copie des données audio
+    new Uint8Array(buffer, 44).set(new Uint8Array(rawAudioData));
+
+    return buffer;
+  };
+
   const enableSound = async () => {
     setShowSoundButton(false);
     await getAudioContext().resume();
-    console.log("🔊 AudioContext activé");
+    console.log("🔊 AudioContext activé manuellement");
   };
 
   const makeOutboundCall = async () => {
@@ -190,27 +233,44 @@ export default function PSTNPhone() {
         {step === 'login' ? (
           <div className="text-center">
             <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
-            <input type="tel" value={myNumber} onChange={e => setMyNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8" />
-            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">Se connecter</button>
+            <input
+              type="tel"
+              value={myNumber}
+              onChange={e => setMyNumber(e.target.value)}
+              className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
+            />
+            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
+              Se connecter
+            </button>
           </div>
         ) : (
           <>
             <div className="flex justify-between mb-10 bg-white/10 p-5 rounded-2xl">
               <div>
-                <div className="text-gray-400 text-sm">Connecté :</div>
+                <div className="text-gray-400 text-sm">Connecté en tant que</div>
                 <div className="font-mono text-2xl">{myNumber}</div>
               </div>
               <button onClick={() => { setStep('login'); hangupCall(); }} className="text-red-400">Déconnexion</button>
             </div>
 
             {showSoundButton && (
-              <button onClick={enableSound} className="w-full bg-yellow-600 py-5 rounded-2xl text-lg font-bold mb-8">🔊 ACTIVER LE SON</button>
+              <button onClick={enableSound} className="w-full bg-yellow-600 py-5 rounded-2xl text-lg font-bold mb-8">
+                🔊 ACTIVER LE SON (obligatoire)
+              </button>
             )}
 
             {!currentCall ? (
               <div className="space-y-6">
-                <input type="tel" value={targetNumber} onChange={e => setTargetNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center" placeholder="Numéro à appeler" />
-                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
+                <input
+                  type="tel"
+                  value={targetNumber}
+                  onChange={e => setTargetNumber(e.target.value)}
+                  className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center"
+                  placeholder="Numéro à appeler"
+                />
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
+                  📞 Appeler
+                </button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-10 text-center">
@@ -227,9 +287,13 @@ export default function PSTNPhone() {
                 )}
                 <div className="space-y-4">
                   {currentCall.status === 'ringing' && currentCall.direction === 'inbound' && (
-                    <button onClick={answerCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">✅ Décrocher</button>
+                    <button onClick={answerCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
+                      ✅ Décrocher
+                    </button>
                   )}
-                  <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">📴 Raccrocher</button>
+                  <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
+                    📴 Raccrocher
+                  </button>
                 </div>
               </div>
             )}
