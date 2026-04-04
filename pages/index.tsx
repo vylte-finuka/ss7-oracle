@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling ultra-rapide (200ms) pour Netlify
+  // Polling très agressif pour recevoir les chunks audio souvent
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -51,6 +51,7 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
+        // Nouvel appel entrant
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           setCurrentCall({
             id: d.callId || `in-${Date.now()}`,
@@ -63,19 +64,23 @@ export default function PSTNPhone() {
           });
         }
 
+        // Passage en communication
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
           startDurationTimer();
           startAudioCapture(currentCall.id);
         }
 
+        // AUDIO REÇU - on force le traitement à chaque polling
         const receivedAudio = d.audioData || d.data?.audioData;
-        if (receivedAudio && receivedAudio.length > 40) {
+        if (receivedAudio && receivedAudio.length > 30) {
           console.log(`🎵 AUDIO REÇU via oracle (${receivedAudio.length} chars)`);
           playReceivedAudio(receivedAudio);
         }
-      } catch (e) {}
-    }, 200);
+      } catch (e) {
+        // console.error("Polling error", e);
+      }
+    }, 180); // polling très rapide
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -91,22 +96,22 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // Capture micro optimisée 4G (chunk très court)
+  // Capture micro avec chunk très court
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000
+        audio: { 
+          echoCancellation: true, 
+          noiseSuppression: true, 
+          autoGainControl: true, 
+          sampleRate: 48000 
         }
       });
       mediaStreamRef.current = stream;
 
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size < 80) return;
+        if (event.data.size < 60) return;
 
         const reader = new FileReader();
         reader.onloadend = async () => {
@@ -119,14 +124,14 @@ export default function PSTNPhone() {
         };
         reader.readAsDataURL(event.data);
       };
-      mediaRecorderRef.current.start(80); // ultra-court pour fluidité
-      console.log("🎤 Micro 4G démarré");
+      mediaRecorderRef.current.start(80); // chunk très court
+      console.log("🎤 Micro démarré – envoi fréquent");
     } catch (err) {
       console.error("Erreur micro", err);
     }
   };
 
-  // Lecture audio cristalline
+  // Lecture audio
   const playReceivedAudio = useCallback(async (base64Input: string) => {
     try {
       const ctx = getAudioContext();
@@ -145,9 +150,9 @@ export default function PSTNPhone() {
       source.connect(ctx.destination);
       source.start(0);
 
-      console.log("▶️ VOIX CRISTALLINE REÇUE ET JOUÉE (4G)");
+      console.log("▶️ VOIX REÇUE ET JOUÉE");
     } catch (err: any) {
-      console.error("Lecture audio échouée :", err.message);
+      console.error("Lecture échouée :", err.message);
       setShowSoundButton(true);
     }
   }, [getAudioContext]);
@@ -177,7 +182,7 @@ export default function PSTNPhone() {
   const enableSound = async () => {
     setShowSoundButton(false);
     await getAudioContext().resume();
-    console.log("🔊 AudioContext activé – qualité cristalline");
+    console.log("🔊 AudioContext activé");
   };
 
   const makeOutboundCall = async () => {
@@ -216,9 +221,16 @@ export default function PSTNPhone() {
       <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
           <div className="text-center">
-            <h1 className="text-5xl mb-8">☎️ PSTN Dialer 4G</h1>
-            <input type="tel" value={myNumber} onChange={e => setMyNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8" />
-            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">Se connecter</button>
+            <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
+            <input
+              type="tel"
+              value={myNumber}
+              onChange={e => setMyNumber(e.target.value)}
+              className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
+            />
+            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
+              Se connecter
+            </button>
           </div>
         ) : (
           <>
@@ -232,14 +244,22 @@ export default function PSTNPhone() {
 
             {showSoundButton && (
               <button onClick={enableSound} className="w-full bg-yellow-600 py-5 rounded-2xl text-lg font-bold mb-8">
-                🔊 ACTIVER LE SON (qualité cristalline)
+                🔊 ACTIVER LE SON
               </button>
             )}
 
             {!currentCall ? (
               <div className="space-y-6">
-                <input type="tel" value={targetNumber} onChange={e => setTargetNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center" placeholder="Numéro à appeler" />
-                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
+                <input
+                  type="tel"
+                  value={targetNumber}
+                  onChange={e => setTargetNumber(e.target.value)}
+                  className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center"
+                  placeholder="Numéro à appeler"
+                />
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
+                  📞 Appeler
+                </button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-10 text-center">
@@ -247,7 +267,7 @@ export default function PSTNPhone() {
                   {currentCall.direction === 'inbound' ? `De ${currentCall.caller}` : `Vers ${currentCall.called}`}
                 </p>
                 <p className="text-2xl mb-10">
-                  {currentCall.status === 'answered' ? '✅ En communication 4G' : '📳 Sonnerie...'}
+                  {currentCall.status === 'answered' ? '✅ En communication' : '📳 Sonnerie...'}
                 </p>
                 {currentCall.status === 'answered' && (
                   <p className="text-6xl font-mono text-green-400 mb-12">
@@ -256,9 +276,13 @@ export default function PSTNPhone() {
                 )}
                 <div className="space-y-4">
                   {currentCall.status === 'ringing' && currentCall.direction === 'inbound' && (
-                    <button onClick={answerCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">✅ Décrocher</button>
+                    <button onClick={answerCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
+                      ✅ Décrocher
+                    </button>
                   )}
-                  <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">📴 Raccrocher</button>
+                  <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
+                    📴 Raccrocher
+                  </button>
                 </div>
               </div>
             )}
