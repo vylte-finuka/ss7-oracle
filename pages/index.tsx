@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // ==================== POLLING (400ms) ====================
+  // ==================== POLLING ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -51,7 +51,6 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
-        // Nouvel appel entrant
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           setCurrentCall({
             id: d.callId || `in-${Date.now()}`,
@@ -64,22 +63,18 @@ export default function PSTNPhone() {
           });
         }
 
-        // Passage en communication
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
           startDurationTimer();
           startAudioCapture(currentCall.id);
         }
 
-        // Audio reçu via l'oracle
         const receivedAudio = d.audioData || d.data?.audioData;
         if (receivedAudio && receivedAudio.length > 40) {
           console.log(`🎵 AUDIO REÇU via oracle (${receivedAudio.length} chars)`);
           playReceivedAudio(receivedAudio);
         }
-      } catch (e) {
-        console.error("Polling error", e);
-      }
+      } catch (e) {}
     }, 400);
 
     return () => {
@@ -96,7 +91,7 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // ==================== CAPTURE MICRO (A → B) ====================
+  // ==================== CAPTURE MICRO (A → B uniquement) ====================
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -112,9 +107,15 @@ export default function PSTNPhone() {
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1] || '';
           if (base64) {
-            const remote = currentCall?.called || targetNumber;
-            console.log(`📤 Audio chunk #${Date.now()} → caller: ${myNumber} | called: ${remote}`);
-            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, remote);
+            // FORCE : toujours envoyer vers l'autre numéro
+            let remoteNumber = targetNumber;
+            if (currentCall) {
+              remoteNumber = currentCall.direction === 'outbound' 
+                ? currentCall.called 
+                : currentCall.caller;
+            }
+            console.log(`📤 Audio chunk #${Date.now()} → caller: ${myNumber} | called: ${remoteNumber}`);
+            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, remoteNumber);
           }
         };
         reader.readAsDataURL(event.data);
@@ -156,9 +157,9 @@ export default function PSTNPhone() {
     const buffer = new ArrayBuffer(44 + rawAudioData.byteLength);
     const view = new DataView(buffer);
 
-    view.setUint32(0, 0x52494646, false); // RIFF
+    view.setUint32(0, 0x52494646, false);
     view.setUint32(4, 36 + rawAudioData.byteLength, true);
-    view.setUint32(8, 0x57415645, false); // WAVE
+    view.setUint32(8, 0x57415645, false);
     view.setUint32(12, 0x666d7420, false);
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
