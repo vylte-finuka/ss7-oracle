@@ -19,6 +19,7 @@ export default function PSTNPhone() {
   const [myNumber, setMyNumber] = useState('33612345678');
   const [targetNumber, setTargetNumber] = useState('33987654321');
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
+  const [isInCall, setIsInCall] = useState(false);
   const [showSoundButton, setShowSoundButton] = useState(false);
 
   const [dialer] = useState(() => new PSTNDialer({
@@ -32,11 +33,7 @@ export default function PSTNPhone() {
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-  const getAudioContext = useCallback(() => {
-    return new (window.AudioContext || (window as any).webkitAudioContext)();
-  }, []);
-
-  // Polling oracle (pas de simulation d'appel entrant)
+  // Polling oracle (signaling uniquement)
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -49,7 +46,6 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
-        // Seulement si c'est un vrai appel entrant d'un autre numéro
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           console.log(`📥 VRAI APPEL ENTRANT de ${oracleCaller}`);
           setCurrentCall({
@@ -65,14 +61,9 @@ export default function PSTNPhone() {
 
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+          setIsInCall(true);
           startDurationTimer();
           startWebRTCCall();
-        }
-
-        const receivedAudio = d.audioData || d.data?.audioData;
-        if (receivedAudio && receivedAudio.length > 30) {
-          console.log(`🎵 AUDIO REÇU via oracle`);
-          playReceivedAudio(receivedAudio);
         }
       } catch (e) {}
     }, 350);
@@ -91,7 +82,6 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // Démarrage WebRTC réel
   const startWebRTCCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -107,69 +97,30 @@ export default function PSTNPhone() {
 
       peerRef.current = peer;
 
-      peer.on('signal', (data) => {
-        console.log("Signal WebRTC envoyé");
-        // Ici tu peux envoyer le signal via l'oracle si tu veux un vrai signaling, mais pour l'instant on simule la connexion
-      });
-
       peer.on('stream', (remoteStream) => {
         if (remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = remoteStream;
-          remoteAudioRef.current.play().catch(() => setShowSoundButton(true));
+          remoteAudioRef.current.play().catch(() => {
+            console.log("Lecture bloquée → bouton manuel");
+            setShowSoundButton(true);
+          });
         }
         console.log("▶️ Flux WebRTC distant reçu - voix en direct");
       });
 
       peer.on('error', (err) => console.error("WebRTC error", err));
+      peer.on('close', () => console.log("WebRTC fermé"));
+
     } catch (err) {
-      console.error("Erreur WebRTC", err);
+      console.error("Erreur démarrage WebRTC", err);
     }
   };
 
-  const playReceivedAudio = useCallback(async (base64Input: string) => {
-    // Fallback si WebRTC ne marche pas
-    try {
-      const ctx = getAudioContext();
-      if (ctx.state === 'suspended') await ctx.resume();
-
-      let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
-      const binaryString = atob(clean);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-
-      const wavBuffer = createWAV(bytes.buffer);
-      const audioBuffer = await ctx.decodeAudioData(wavBuffer);
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-      source.start(0);
-      console.log("▶️ Audio fallback joué");
-    } catch (e) {}
-  }, [getAudioContext]);
-
-  const createWAV = (rawAudioData: ArrayBuffer): ArrayBuffer => {
-    const buffer = new ArrayBuffer(44 + rawAudioData.byteLength);
-    const view = new DataView(buffer);
-    view.setUint32(0, 0x52494646, false);
-    view.setUint32(4, 36 + rawAudioData.byteLength, true);
-    view.setUint32(8, 0x57415645, false);
-    view.setUint32(12, 0x666d7420, false);
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, 48000, true);
-    view.setUint32(28, 96000, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    view.setUint32(36, 0x64617461, false);
-    view.setUint32(40, rawAudioData.byteLength, true);
-    new Uint8Array(buffer, 44).set(new Uint8Array(rawAudioData));
-    return buffer;
-  };
-
-  const enableSound = async () => {
+  const enableSound = () => {
     setShowSoundButton(false);
-    if (remoteAudioRef.current) remoteAudioRef.current.play();
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play();
+    }
   };
 
   const makeOutboundCall = async () => {
@@ -191,6 +142,7 @@ export default function PSTNPhone() {
     if (!currentCall) return;
     await dialer.answerCall(currentCall.id, { callerNumber: currentCall.caller, calledNumber: myNumber });
     setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+    setIsInCall(true);
     startDurationTimer();
     startWebRTCCall();
   };
@@ -199,7 +151,9 @@ export default function PSTNPhone() {
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     peerRef.current?.destroy();
     peerRef.current = null;
+    if (durationInterval.current) clearInterval(durationInterval.current);
     setCurrentCall(null);
+    setIsInCall(false);
     setShowSoundButton(false);
   };
 
@@ -208,9 +162,16 @@ export default function PSTNPhone() {
       <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
           <div className="text-center">
-            <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
-            <input type="tel" value={myNumber} onChange={e => setMyNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8" />
-            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">Se connecter</button>
+            <h1 className="text-5xl mb-8">☎️ PSTN Dialer WebRTC</h1>
+            <input
+              type="tel"
+              value={myNumber}
+              onChange={e => setMyNumber(e.target.value)}
+              className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
+            />
+            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
+              Se connecter
+            </button>
           </div>
         ) : (
           <>
@@ -232,16 +193,28 @@ export default function PSTNPhone() {
 
             {!currentCall ? (
               <div className="space-y-6">
-                <input type="tel" value={targetNumber} onChange={e => setTargetNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center" placeholder="Numéro à appeler" />
-                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
+                <input
+                  type="tel"
+                  value={targetNumber}
+                  onChange={e => setTargetNumber(e.target.value)}
+                  className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center"
+                  placeholder="Numéro à appeler"
+                />
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
+                  📞 Appeler (WebRTC)
+                </button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-10 text-center">
                 <p className="text-3xl font-mono mb-6">
                   {currentCall.direction === 'inbound' ? `De ${currentCall.caller}` : `Vers ${currentCall.called}`}
                 </p>
-                <p className="text-2xl mb-10 text-green-400">✅ En communication (WebRTC + Polling)</p>
-                <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">📴 Raccrocher</button>
+                <p className="text-2xl mb-10 text-green-400">
+                  ✅ En communication WebRTC • {Math.floor(currentCall.duration / 60)}:{(currentCall.duration % 60).toString().padStart(2, '0')}
+                </p>
+                <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
+                  📴 Raccrocher
+                </button>
               </div>
             )}
           </>
