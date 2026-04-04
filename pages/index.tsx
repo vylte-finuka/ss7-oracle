@@ -1,92 +1,206 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Peer from 'simple-peer';
+import PSTNDialer from '../lib/pstn-dialer';
+
+interface CallSession {
+  id: string;
+  caller: string;
+  called: string;
+  direction: 'inbound' | 'outbound';
+  status: 'ringing' | 'answered' | 'hungup' | 'completed';
+  duration: number;
+  startTime: Date;
+}
 
 export default function PSTNPhone() {
   const [step, setStep] = useState<'login' | 'phone'>('login');
   const [myNumber, setMyNumber] = useState('33612345678');
   const [targetNumber, setTargetNumber] = useState('33987654321');
-  const [currentCall, setCurrentCall] = useState<any>(null);
-  const [isInCall, setIsInCall] = useState(false);
-
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-
+  const [currentCall, setCurrentCall] = useState<CallSession | null>(null);
   const [showSoundButton, setShowSoundButton] = useState(false);
 
-  // Création de la connexion WebRTC
-  const createPeerConnection = useCallback(() => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
+  const [dialer] = useState(() => new PSTNDialer({
+    baseUrl: process.env.NEXT_PUBLIC_ORACLE_BASE_URL || '',
+    apiKey: process.env.NEXT_PUBLIC_ORACLE_API_KEY || 'test-key-default',
+  }));
 
-    pc.ontrack = (event) => {
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = event.streams[0];
-        remoteAudioRef.current.play().catch(() => setShowSoundButton(true));
-      }
-      console.log("▶️ Flux audio distant reçu (WebRTC)");
-    };
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peerRef = useRef<Peer.Instance | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const durationInterval = useRef<NodeJS.Timeout | null>(null);
+  const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
-    pc.oniceconnectionstatechange = () => {
-      console.log("ICE state:", pc.iceConnectionState);
-    };
-
-    return pc;
+  const getAudioContext = useCallback(() => {
+    return new (window.AudioContext || (window as any).webkitAudioContext)();
   }, []);
 
-  const startCall = async (isOutgoing: boolean) => {
+  // Polling oracle (pas de simulation d'appel entrant)
+  useEffect(() => {
+    if (step !== 'phone' || !myNumber) return;
+
+    pollingInterval.current = setInterval(async () => {
+      try {
+        const res = await dialer.checkIncomingCalls(myNumber);
+        if (!res?.success || !res?.data) return;
+
+        const d = res.data;
+        const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
+        const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
+
+        // Seulement si c'est un vrai appel entrant d'un autre numéro
+        if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
+          console.log(`📥 VRAI APPEL ENTRANT de ${oracleCaller}`);
+          setCurrentCall({
+            id: d.callId || `in-${Date.now()}`,
+            caller: oracleCaller,
+            called: myNumber,
+            direction: 'inbound',
+            status: 'ringing',
+            duration: 0,
+            startTime: new Date(),
+          });
+        }
+
+        if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
+          setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+          startDurationTimer();
+          startWebRTCCall();
+        }
+
+        const receivedAudio = d.audioData || d.data?.audioData;
+        if (receivedAudio && receivedAudio.length > 30) {
+          console.log(`🎵 AUDIO REÇU via oracle`);
+          playReceivedAudio(receivedAudio);
+        }
+      } catch (e) {}
+    }, 350);
+
+    return () => {
+      if (pollingInterval.current) clearInterval(pollingInterval.current);
+    };
+  }, [step, myNumber, currentCall]);
+
+  const startDurationTimer = () => {
+    if (durationInterval.current) clearInterval(durationInterval.current);
+    durationInterval.current = setInterval(() => {
+      setCurrentCall(prev => prev && prev.status === 'answered' 
+        ? { ...prev, duration: prev.duration + 1 } 
+        : prev);
+    }, 1000);
+  };
+
+  // Démarrage WebRTC réel
+  const startWebRTCCall = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 }
       });
       localStreamRef.current = stream;
 
-      const pc = createPeerConnection();
-      peerConnectionRef.current = pc;
+      const peer = new Peer({
+        initiator: currentCall?.direction === 'outbound',
+        trickle: false,
+        stream: stream
+      });
 
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      peerRef.current = peer;
 
-      if (isOutgoing) {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        console.log("📤 Offer envoyée (simulation WebRTC)");
-        // Ici on simule l'échange SDP via polling ou signaling (pour l'instant on force answer)
-        setTimeout(() => simulateAnswer(pc), 800);
-      } else {
-        // Incoming - on simule offer reçue
-        const offer = await pc.createOffer(); // simulation
-        await pc.setLocalDescription(offer);
-      }
+      peer.on('signal', (data) => {
+        console.log("Signal WebRTC envoyé");
+        // Ici tu peux envoyer le signal via l'oracle si tu veux un vrai signaling, mais pour l'instant on simule la connexion
+      });
 
-      setIsInCall(true);
-      setCurrentCall({ direction: isOutgoing ? 'outbound' : 'inbound' });
-      console.log(`🎥 Appel ${isOutgoing ? 'sortant' : 'entrant'} démarré avec WebRTC`);
+      peer.on('stream', (remoteStream) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => setShowSoundButton(true));
+        }
+        console.log("▶️ Flux WebRTC distant reçu - voix en direct");
+      });
+
+      peer.on('error', (err) => console.error("WebRTC error", err));
     } catch (err) {
       console.error("Erreur WebRTC", err);
     }
   };
 
-  const simulateAnswer = async (pc: RTCPeerConnection) => {
-    const answer = await pc.createAnswer();
-    await pc.setRemoteDescription(answer);
-    console.log("✅ Answer simulée - connexion WebRTC établie");
-  };
+  const playReceivedAudio = useCallback(async (base64Input: string) => {
+    // Fallback si WebRTC ne marche pas
+    try {
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') await ctx.resume();
 
-  const hangupCall = () => {
-    localStreamRef.current?.getTracks().forEach(t => t.stop());
-    peerConnectionRef.current?.close();
-    peerConnectionRef.current = null;
-    setIsInCall(false);
-    setCurrentCall(null);
+      let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
+      const binaryString = atob(clean);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+
+      const wavBuffer = createWAV(bytes.buffer);
+      const audioBuffer = await ctx.decodeAudioData(wavBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      console.log("▶️ Audio fallback joué");
+    } catch (e) {}
+  }, [getAudioContext]);
+
+  const createWAV = (rawAudioData: ArrayBuffer): ArrayBuffer => {
+    const buffer = new ArrayBuffer(44 + rawAudioData.byteLength);
+    const view = new DataView(buffer);
+    view.setUint32(0, 0x52494646, false);
+    view.setUint32(4, 36 + rawAudioData.byteLength, true);
+    view.setUint32(8, 0x57415645, false);
+    view.setUint32(12, 0x666d7420, false);
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 48000, true);
+    view.setUint32(28, 96000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    view.setUint32(36, 0x64617461, false);
+    view.setUint32(40, rawAudioData.byteLength, true);
+    new Uint8Array(buffer, 44).set(new Uint8Array(rawAudioData));
+    return buffer;
   };
 
   const enableSound = async () => {
     setShowSoundButton(false);
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.play();
-    }
+    if (remoteAudioRef.current) remoteAudioRef.current.play();
+  };
+
+  const makeOutboundCall = async () => {
+    const res = await dialer.initiateCall(myNumber, targetNumber);
+    const callId = res.data?.callId || `call-${Date.now()}`;
+    setCurrentCall({
+      id: callId,
+      caller: myNumber,
+      called: targetNumber,
+      direction: 'outbound',
+      status: 'ringing',
+      duration: 0,
+      startTime: new Date(),
+    });
+    startWebRTCCall();
+  };
+
+  const answerCall = async () => {
+    if (!currentCall) return;
+    await dialer.answerCall(currentCall.id, { callerNumber: currentCall.caller, calledNumber: myNumber });
+    setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
+    startDurationTimer();
+    startWebRTCCall();
+  };
+
+  const hangupCall = () => {
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
+    peerRef.current?.destroy();
+    peerRef.current = null;
+    setCurrentCall(null);
+    setShowSoundButton(false);
   };
 
   return (
@@ -94,16 +208,9 @@ export default function PSTNPhone() {
       <div className="max-w-md mx-auto pt-12">
         {step === 'login' ? (
           <div className="text-center">
-            <h1 className="text-5xl mb-8">☎️ PSTN Dialer WebRTC</h1>
-            <input
-              type="tel"
-              value={myNumber}
-              onChange={e => setMyNumber(e.target.value)}
-              className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8"
-            />
-            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">
-              Se connecter
-            </button>
+            <h1 className="text-5xl mb-8">☎️ PSTN Dialer</h1>
+            <input type="tel" value={myNumber} onChange={e => setMyNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center mb-8" />
+            <button onClick={() => setStep('phone')} className="w-full bg-green-600 py-5 rounded-2xl text-xl font-bold">Se connecter</button>
           </div>
         ) : (
           <>
@@ -123,31 +230,18 @@ export default function PSTNPhone() {
               </button>
             )}
 
-            {!isInCall ? (
+            {!currentCall ? (
               <div className="space-y-6">
-                <input
-                  type="tel"
-                  value={targetNumber}
-                  onChange={e => setTargetNumber(e.target.value)}
-                  className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center"
-                  placeholder="Numéro à appeler"
-                />
-                <button onClick={() => startCall(true)} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">
-                  📞 Appeler (WebRTC)
-                </button>
-                <button onClick={() => startCall(false)} className="w-full bg-blue-600 py-6 rounded-3xl text-2xl font-bold">
-                  📥 Simuler Appel Entrant
-                </button>
+                <input type="tel" value={targetNumber} onChange={e => setTargetNumber(e.target.value)} className="w-full bg-white/10 border border-gray-500 rounded-2xl px-8 py-6 text-3xl font-mono text-center" placeholder="Numéro à appeler" />
+                <button onClick={makeOutboundCall} className="w-full bg-green-600 py-6 rounded-3xl text-2xl font-bold">📞 Appeler</button>
               </div>
             ) : (
               <div className="bg-white/10 rounded-3xl p-10 text-center">
                 <p className="text-3xl font-mono mb-6">
-                  {currentCall?.direction === 'outbound' ? `Vers ${targetNumber}` : `De ${targetNumber}`}
+                  {currentCall.direction === 'inbound' ? `De ${currentCall.caller}` : `Vers ${currentCall.called}`}
                 </p>
-                <p className="text-2xl mb-10 text-green-400">✅ En communication WebRTC (basse latence)</p>
-                <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">
-                  📴 Raccrocher
-                </button>
+                <p className="text-2xl mb-10 text-green-400">✅ En communication (WebRTC + Polling)</p>
+                <button onClick={hangupCall} className="w-full bg-red-600 py-6 rounded-3xl text-2xl font-bold">📴 Raccrocher</button>
               </div>
             )}
           </>
