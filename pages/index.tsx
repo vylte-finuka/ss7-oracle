@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling
+  // ==================== POLLING (400ms) ====================
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -51,6 +51,7 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
+        // Nouvel appel entrant
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           setCurrentCall({
             id: d.callId || `in-${Date.now()}`,
@@ -63,12 +64,14 @@ export default function PSTNPhone() {
           });
         }
 
+        // Passage en communication
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
           startDurationTimer();
           startAudioCapture(currentCall.id);
         }
 
+        // Audio reçu via l'oracle
         const receivedAudio = d.audioData || d.data?.audioData;
         if (receivedAudio && receivedAudio.length > 40) {
           console.log(`🎵 AUDIO REÇU via oracle (${receivedAudio.length} chars)`);
@@ -77,7 +80,7 @@ export default function PSTNPhone() {
       } catch (e) {
         console.error("Polling error", e);
       }
-    }, 450);
+    }, 400);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -93,15 +96,11 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
+  // ==================== CAPTURE MICRO (A → B) ====================
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true, 
-          autoGainControl: true,
-          sampleRate: 44100 
-        }
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 44100 }
       });
       mediaStreamRef.current = stream;
 
@@ -113,19 +112,21 @@ export default function PSTNPhone() {
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1] || '';
           if (base64) {
-            console.log(`📤 Envoi chunk audio vers oracle (${base64.length} chars)`);
-            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, currentCall?.called || targetNumber);
+            const remote = currentCall?.called || targetNumber;
+            console.log(`📤 Audio chunk #${Date.now()} → caller: ${myNumber} | called: ${remote}`);
+            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, remote);
           }
         };
         reader.readAsDataURL(event.data);
       };
       mediaRecorderRef.current.start(120);
-      console.log("🎤 Capture micro démarrée – flux vers oracle");
+      console.log("🎤 Micro démarré – flux vers oracle");
     } catch (err) {
-      console.error("Erreur getUserMedia", err);
+      console.error("Erreur micro", err);
     }
   };
 
+  // ==================== LECTURE AUDIO ====================
   const playReceivedAudio = useCallback(async (base64Input: string) => {
     try {
       const ctx = getAudioContext();
@@ -134,11 +135,8 @@ export default function PSTNPhone() {
       let clean = base64Input.trim().replace(/[^A-Za-z0-9+/=]/g, '');
       const binaryString = atob(clean);
       const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
 
-      // Création d'un WAV valide pour decodeAudioData
       const wavBuffer = createWAV(bytes.buffer);
 
       const audioBuffer = await ctx.decodeAudioData(wavBuffer);
@@ -154,46 +152,32 @@ export default function PSTNPhone() {
     }
   }, [getAudioContext]);
 
-  // Fonction qui crée un header WAV valide autour des données audio
   const createWAV = (rawAudioData: ArrayBuffer): ArrayBuffer => {
-    const numChannels = 1;
-    const sampleRate = 44100;
-    const bitsPerSample = 16;
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-    const blockAlign = numChannels * (bitsPerSample / 8);
-
     const buffer = new ArrayBuffer(44 + rawAudioData.byteLength);
     const view = new DataView(buffer);
 
-    // RIFF header
-    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(0, 0x52494646, false); // RIFF
     view.setUint32(4, 36 + rawAudioData.byteLength, true);
-    view.setUint32(8, 0x57415645, false); // "WAVE"
-
-    // fmt subchunk
-    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(8, 0x57415645, false); // WAVE
+    view.setUint32(12, 0x666d7420, false);
     view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
-
-    // data subchunk
-    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 44100, true);
+    view.setUint32(28, 88200, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    view.setUint32(36, 0x64617461, false);
     view.setUint32(40, rawAudioData.byteLength, true);
 
-    // Copie des données audio
     new Uint8Array(buffer, 44).set(new Uint8Array(rawAudioData));
-
     return buffer;
   };
 
   const enableSound = async () => {
     setShowSoundButton(false);
     await getAudioContext().resume();
-    console.log("🔊 AudioContext activé manuellement");
+    console.log("🔊 AudioContext activé");
   };
 
   const makeOutboundCall = async () => {
