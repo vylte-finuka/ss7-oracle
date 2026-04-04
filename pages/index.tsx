@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling très agressif pour recevoir les chunks audio souvent
+  // Polling équilibré (350ms) - suffisant pour voix fluide sans spam
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -51,7 +51,6 @@ export default function PSTNPhone() {
         const oracleCaller = (d.call?.caller || d.caller || 'unknown').trim();
         const oracleStatus = (d.call?.status || d.status || 'INITIATED').toUpperCase();
 
-        // Nouvel appel entrant
         if (!currentCall && oracleCaller !== 'unknown' && oracleCaller !== myNumber) {
           setCurrentCall({
             id: d.callId || `in-${Date.now()}`,
@@ -64,23 +63,19 @@ export default function PSTNPhone() {
           });
         }
 
-        // Passage en communication
         if (currentCall && oracleStatus === 'ANSWERED' && currentCall.status !== 'answered') {
           setCurrentCall(prev => prev ? { ...prev, status: 'answered' } : null);
           startDurationTimer();
           startAudioCapture(currentCall.id);
         }
 
-        // AUDIO REÇU - on force le traitement à chaque polling
         const receivedAudio = d.audioData || d.data?.audioData;
-        if (receivedAudio && receivedAudio.length > 30) {
+        if (receivedAudio && receivedAudio.length > 40) {
           console.log(`🎵 AUDIO REÇU via oracle (${receivedAudio.length} chars)`);
           playReceivedAudio(receivedAudio);
         }
-      } catch (e) {
-        // console.error("Polling error", e);
-      }
-    }, 180); // polling très rapide
+      } catch (e) {}
+    }, 350);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -96,22 +91,17 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // Capture micro avec chunk très court
+  // Capture micro optimisée
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true, 
-          autoGainControl: true, 
-          sampleRate: 48000 
-        }
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 }
       });
       mediaStreamRef.current = stream;
 
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
       mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size < 60) return;
+        if (event.data.size < 80) return;
 
         const reader = new FileReader();
         reader.onloadend = async () => {
@@ -124,14 +114,13 @@ export default function PSTNPhone() {
         };
         reader.readAsDataURL(event.data);
       };
-      mediaRecorderRef.current.start(80); // chunk très court
-      console.log("🎤 Micro démarré – envoi fréquent");
+      mediaRecorderRef.current.start(100);
+      console.log("🎤 Micro démarré");
     } catch (err) {
       console.error("Erreur micro", err);
     }
   };
 
-  // Lecture audio
   const playReceivedAudio = useCallback(async (base64Input: string) => {
     try {
       const ctx = getAudioContext();
@@ -152,7 +141,7 @@ export default function PSTNPhone() {
 
       console.log("▶️ VOIX REÇUE ET JOUÉE");
     } catch (err: any) {
-      console.error("Lecture échouée :", err.message);
+      console.error("Lecture audio échouée :", err.message);
       setShowSoundButton(true);
     }
   }, [getAudioContext]);
