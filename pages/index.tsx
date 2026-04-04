@@ -38,7 +38,7 @@ export default function PSTNPhone() {
     return audioContextRef.current;
   }, []);
 
-  // Polling équilibré (350ms) - suffisant pour voix fluide sans spam
+  // Polling équilibré
   useEffect(() => {
     if (step !== 'phone' || !myNumber) return;
 
@@ -75,7 +75,7 @@ export default function PSTNPhone() {
           playReceivedAudio(receivedAudio);
         }
       } catch (e) {}
-    }, 350);
+    }, 300);
 
     return () => {
       if (pollingInterval.current) clearInterval(pollingInterval.current);
@@ -91,7 +91,7 @@ export default function PSTNPhone() {
     }, 1000);
   };
 
-  // Capture micro optimisée
+  // Capture micro - FORCE vers le numéro distant
   const startAudioCapture = async (callId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -107,15 +107,19 @@ export default function PSTNPhone() {
         reader.onloadend = async () => {
           const base64 = (reader.result as string)?.split(',')[1] || '';
           if (base64) {
-            const remote = currentCall?.called || targetNumber;
-            console.log(`📤 Audio chunk #${Date.now()} → caller: ${myNumber} | called: ${remote}`);
-            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, remote);
+            // FORCE le numéro distant - plus jamais self-loop
+            const remoteNumber = currentCall ? 
+              (currentCall.direction === 'outbound' ? currentCall.called : currentCall.caller) 
+              : targetNumber;
+
+            console.log(`📤 Audio chunk #${Date.now()} → caller: ${myNumber} | called: ${remoteNumber}`);
+            await dialer.sendAudioData(callId, base64, Date.now(), myNumber, remoteNumber);
           }
         };
         reader.readAsDataURL(event.data);
       };
       mediaRecorderRef.current.start(100);
-      console.log("🎤 Micro démarré");
+      console.log("🎤 Micro démarré - envoi vers l'autre numéro");
     } catch (err) {
       console.error("Erreur micro", err);
     }
@@ -139,7 +143,7 @@ export default function PSTNPhone() {
       source.connect(ctx.destination);
       source.start(0);
 
-      console.log("▶️ VOIX REÇUE ET JOUÉE");
+      console.log("▶️ VOIX DE L'AUTRE REÇUE ET JOUÉE");
     } catch (err: any) {
       console.error("Lecture audio échouée :", err.message);
       setShowSoundButton(true);
