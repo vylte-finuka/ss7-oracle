@@ -1,12 +1,22 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { NextApiRequest, NextApiResponse } from "next";
+import { ethers } from "ethers";
+
 export const config = {
   api: { bodyParser: { sizeLimit: "50mb" } },
 };
 
-import type { NextApiRequest, NextApiResponse } from "next";
+const SLURA_RPC = process.env.SLURA_RPC!;
+const CONTRACT_ADDRESS = "0x62598a7a170c52a66a020216f4dCb706af3E89F6";
+const ORACLE_API_KEY = process.env.ORACLE_API_KEY!;
+
+const provider = new ethers.JsonRpcProvider(SLURA_RPC);
+const wallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
 
 let activeCall: {
   caller: string;
   called: string;
+  callId: string;
   lastAudioFromCaller?: string;
   lastAudioFromCalled?: string;
 } | null = null;
@@ -14,60 +24,47 @@ let activeCall: {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
+  const apiKey = req.headers["x-api-key"] as string;
+  if (apiKey !== ORACLE_API_KEY) return res.status(401).json({ error: "Unauthorized" });
+
   const body = req.body || {};
-  const caller = (body.callerNumber || body.caller || "").trim();
-  const called = (body.calledNumber || body.called || "").trim();
-  const status = (body.status || "INITIATED").toUpperCase();
-  const incomingAudio = body.audioData || body.data?.audioData;
+  const caller = (body.callerNumber || body.caller || body.From || "").trim();
+  const called = (body.calledNumber || body.called || body.To || "").trim();
+  const status = (body.status || body.CallStatus || "INITIATED").toUpperCase();
+  const audioDataBase64 = body.audioData || "";
 
-  console.log(`📥 ORACLE → caller="${caller}" | called="${called}" | status="${status}" | audio=${!!incomingAudio}`);
+  console.log(`📥 ORACLE → caller="${caller}" | called="${called}" | status="${status}" | audio=${!!audioDataBase64}`);
 
-  // === Nouvel appel ===
   if (status === "INITIATED" && caller && called && caller !== called) {
-    activeCall = { caller, called, lastAudioFromCaller: "", lastAudioFromCalled: "" };
-    console.log(`📌 Appel enregistré : ${caller} → ${called}`);
+    const callId = `tw-${Date.now()}`;
+    activeCall = { caller, called, callId, lastAudioFromCaller: "", lastAudioFromCalled: "" };
+    console.log(`📌 Appel Twilio enregistré : ${caller} → ${called}`);
   }
 
-  // === Stockage audio (uniquement si les numéros sont différents) ===
-  if (incomingAudio && typeof incomingAudio === "string" && incomingAudio.length > 30 && activeCall) {
-    if (caller === activeCall.caller && caller !== activeCall.called) {
-      activeCall.lastAudioFromCaller = incomingAudio;
-      console.log(`🎤 Audio stocké A→B (de ${caller})`);
-    } else if (caller === activeCall.called && caller !== activeCall.caller) {
-      activeCall.lastAudioFromCalled = incomingAudio;
-      console.log(`🎤 Audio stocké B→A (de ${caller})`);
+  if (audioDataBase64 && audioDataBase64.length > 30 && activeCall) {
+    if (caller === activeCall.caller) {
+      activeCall.lastAudioFromCaller = audioDataBase64;
+      console.log(`🎤 Chunk A→B stocké`);
+    } else if (caller === activeCall.called) {
+      activeCall.lastAudioFromCalled = audioDataBase64;
+      console.log(`🎤 Chunk B→A stocké`);
     }
   }
 
-  // === Polling : renvoi du bon flux ===
-  if (status === "INITIATED" && activeCall) {
-    const isCalleePolling = called === activeCall.called;
-    const audioToReturn = isCalleePolling 
-      ? activeCall.lastAudioFromCaller 
-      : activeCall.lastAudioFromCalled;
-
-    console.log(`📤 Renvoi audio à ${called} → ${isCalleePolling ? "de A" : "de B"}`);
+  if (activeCall) {
+    const isCallee = called === activeCall.called;
+    const audioToReturn = isCallee ? activeCall.lastAudioFromCaller : activeCall.lastAudioFromCalled;
 
     return res.status(200).json({
       success: true,
       data: {
-        callId: `call-${Date.now()}`,
+        callId: activeCall.callId,
         call: { caller: activeCall.caller, called: activeCall.called, status: "ANSWERED" },
         audioData: audioToReturn || "",
       },
-      message: "✅ Flux audio via oracle (A ↔ B)",
+      message: "✅ Chunk audio capturé",
     });
   }
 
-  // === Raccrochage ===
-  if (status === "HUNGUP" || status === "COMPLETED") {
-    console.log("📴 Raccrochage → reset total");
-    activeCall = null;
-  }
-
-  return res.status(200).json({
-    success: true,
-    data: { call: { caller: "unknown", called: "unknown", status: "INITIATED" }, audioData: "" },
-    message: "✅ Aucun appel actif",
-  });
+  return res.status(200).json({ success: true, message: "OK" });
 }
