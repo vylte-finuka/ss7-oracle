@@ -1,51 +1,39 @@
-import { io, Socket } from "socket.io-client";
-import Peer from "simple-peer";
 import { useEffect, useRef, useState } from "react";
+import Peer from "simple-peer";
+import Ably from "ably/promises";
+
+const ably = new Ably.Realtime.Promise({
+  key: process.env.NEXT_PUBLIC_ABLY_KEY!,
+});
 
 export default function PSTNPhone() {
   const [myNumber, setMyNumber] = useState("33612345678");
   const [targetNumber, setTargetNumber] = useState("33987654321");
   const [currentCall, setCurrentCall] = useState<any>(null);
 
-  const socketRef = useRef<Socket | null>(null);
   const peerRef = useRef<Peer.Instance | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
   // -----------------------------
-  // 1. Connexion Socket.IO
+  // 1. Ably : abonnement à mon channel
   // -----------------------------
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL!, {
-      path: process.env.NEXT_PUBLIC_SOCKET_PATH!,
-      transports: ["websocket"]
+    const channel = ably.channels.get(`calls:${myNumber}`);
+
+    channel.subscribe("incoming-call", ({ data }) => {
+      setCurrentCall({
+        id: data.callId,
+        caller: data.caller,
+        called: myNumber,
+        direction: "inbound"
+      });
     });
 
-    socketRef.current = socket;
-
-    socket.on("connect", () => {
-      console.log("🟢 Socket.IO connecté :", socket.id);
-      socket.emit("register", myNumber);
+    channel.subscribe("webrtc-signal", ({ data }) => {
+      peerRef.current?.signal(data.signal);
     });
 
-    // Appel entrant
-    socket.on("incoming-call", ({ caller, callId }) => {
-      console.log("📞 Appel entrant :", caller);
-      setCurrentCall({ id: callId, caller, called: myNumber, direction: "inbound" });
-    });
-
-    // Réponse
-    socket.on("call-answered", ({ callId }) => {
-      console.log("📞 Appel répondu :", callId);
-    });
-
-    // Signaling WebRTC
-    socket.on("webrtc-signal", ({ signal }) => {
-      console.log("📡 Signal WebRTC reçu");
-      peerRef.current?.signal(signal);
-    });
-
-    return () => socket.disconnect();
+    return () => channel.detach();
   }, [myNumber]);
 
   // -----------------------------
@@ -53,7 +41,6 @@ export default function PSTNPhone() {
   // -----------------------------
   const startWebRTC = async (isInitiator: boolean, otherNumber: string) => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    localStreamRef.current = stream;
 
     const peer = new Peer({
       initiator: isInitiator,
@@ -63,16 +50,15 @@ export default function PSTNPhone() {
 
     peerRef.current = peer;
 
-    // Envoi du signal WebRTC via Socket.IO
+    // Envoi du signal via Ably
     peer.on("signal", (signal) => {
-      socketRef.current?.emit("webrtc-signal", {
+      ably.channels.get(`calls:${otherNumber}`).publish("webrtc-signal", {
         callId: currentCall?.id,
-        signal,
-        to: otherNumber
+        signal
       });
     });
 
-    // Réception du flux audio distant
+    // Flux audio distant
     peer.on("stream", (remoteStream) => {
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = remoteStream;
@@ -94,9 +80,8 @@ export default function PSTNPhone() {
       direction: "outbound"
     });
 
-    socketRef.current?.emit("call", {
+    ably.channels.get(`calls:${targetNumber}`).publish("incoming-call", {
       caller: myNumber,
-      called: targetNumber,
       callId
     });
 
@@ -107,26 +92,12 @@ export default function PSTNPhone() {
   // 4. Répondre
   // -----------------------------
   const answer = () => {
-    socketRef.current?.emit("answer", {
-      callId: currentCall.id,
-      answerer: myNumber
-    });
-
     startWebRTC(false, currentCall.caller);
-  };
-
-  // -----------------------------
-  // 5. Raccrocher
-  // -----------------------------
-  const hangup = () => {
-    socketRef.current?.emit("hangup", { callId: currentCall.id });
-    peerRef.current?.destroy();
-    setCurrentCall(null);
   };
 
   return (
     <div>
-      <h1>PSTN WebRTC Phone</h1>
+      <h1>📡 WebRTC + Ably + Netlify</h1>
 
       <audio ref={remoteAudioRef} autoPlay />
 
@@ -139,12 +110,10 @@ export default function PSTNPhone() {
         <>
           <p>Appel entrant de {currentCall.caller}</p>
           <button onClick={answer}>📞 Décrocher</button>
-          <button onClick={hangup}>❌ Refuser</button>
         </>
       ) : (
         <>
           <p>Appel vers {currentCall.called}</p>
-          <button onClick={hangup}>❌ Raccrocher</button>
         </>
       )}
     </div>
