@@ -24,7 +24,7 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "simple-peer": "latest",
-    "webrtc-adapter": "latest"
+    "ably": "latest"
   },
   "devDependencies": {
     "@types/fluent-ffmpeg": "^2.1.28",
