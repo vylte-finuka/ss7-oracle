@@ -1,9 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { ethers } from "ethers";
+import Ably from "ably";
 
 export const config = {
-  api: { bodyParser: { sizeLimit: "50mb" } },
+  api: {
+    bodyParser: {
+      sizeLimit: "50mb",
+    },
+  },
 };
 
 const SLURA_RPC = process.env.SLURA_RPC!;
@@ -13,127 +18,132 @@ const ORACLE_API_KEY = process.env.ORACLE_API_KEY!;
 const provider = new ethers.JsonRpcProvider(SLURA_RPC);
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
 
-let activeCall: {
-  caller: string;
-  called: string;
-  callId: string;
-  lastAudioFromCaller?: string;
-  lastAudioFromCalled?: string;
-} | null = null;
+// ==================== ABLY INITIALISATION ====================
+const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+
+const ABI = [
+  "function initiateCall(uint8 opcode,uint8 msgType,uint64 callerHash,uint64 calledHash,uint64 timestamp,uint64 extra,bytes payload) external returns (bytes32)",
+  "function reportCallResult(bytes32 callId,string status,bytes responseData) external",
+];
+
+const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
+
+// Stockage des appels en cours
+const pendingCalls = new Map<string, { caller: string; called: string }>();
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  const apiKey = req.headers["x-api-key"] as string;
-  if (apiKey !== ORACLE_API_KEY) return res.status(401).json({ error: "Unauthorized" });
-
-  const body = req.body || {};
-  const caller = (body.callerNumber || body.caller || body.From || "").trim();
-  const called = (body.calledNumber || body.called || body.To || "").trim();
-  const status = (body.status || body.CallStatus || "INITIATED").toUpperCase();
-  const audioDataBase64 = body.audioData || "";
-
-  console.log(`📥 ORACLE → caller="${caller}" | called="${called}" | status="${status}" | audio=${!!audioDataBase64}`);
-
-  if (status === "INITIATED" && caller && called && caller !== called) {
-    const callId = `tw-${Date.now()}`;
-    activeCall = { caller, called, callId, lastAudioFromCaller: "", lastAudioFromCalled: "" };
-    console.log(`📌 Appel Twilio enregistré : ${caller} → ${called}`);
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (audioDataBase64 && audioDataBase64.length > 30 && activeCall) {
-    if (caller === activeCall.caller) {
-      activeCall.lastAudioFromCaller = audioDataBase64;
-      console.log(`🎤 Chunk A→B stocké`);
-    } else if (caller === activeCall.called) {
-      activeCall.lastAudioFromCalled = audioDataBase64;
-      console.log(`🎤 Chunk B→A stocké`);
+  try {
+    const apiKey = req.headers["x-api-key"] as string;
+    if (apiKey !== ORACLE_API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
-  }
 
-  if (activeCall) {
-    const isCallee = called === activeCall.called;
-    const audioToReturn = isCallee ? activeCall.lastAudioFromCaller : activeCall.lastAudioFromCalled;
+    const body = req.body;
+
+    const callerNumber = (body.callerNumber || body.caller || "").toString().trim();
+    const calledNumber = (body.calledNumber || body.called || "").toString().trim();
+    const status = (body.status || "QUEUED").toString().toUpperCase();
+    const callType = (body.callType || "voice").toString();
+    const audioDataBase64 = body.audioData || "";
+
+    console.log(`📥 Requête reçue → caller="${callerNumber}" | called="${calledNumber}" | status="${status}" | audio=${!!audioDataBase64}`);
+
+    // ==================== NOUVEL APPEL ====================
+    if (status === "INITIATED" && callerNumber && calledNumber) {
+      pendingCalls.set(calledNumber, { caller: callerNumber, called: calledNumber });
+      console.log(`📌 Appel enregistré → ${callerNumber} → ${calledNumber}`);
+    }
+
+    // ==================== CAPTURE CHUNK AUDIO + PUBLICATION ABLY ====================
+    if (audioDataBase64 && audioDataBase64.length > 30 && pendingCalls.has(calledNumber)) {
+      const call = pendingCalls.get(calledNumber)!;
+
+      if (callerNumber === call.caller) {
+        call.lastAudioFromCaller = audioDataBase64;   // A → B
+      } else if (callerNumber === call.called) {
+        call.lastAudioFromCalled = audioDataBase64;   // B → A
+      }
+
+      // Publication bidirectionnelle sur Ably
+      const channelName = `call-${call.caller}-${call.called}`;
+      const channel = ably.channels.get(channelName);
+
+      await channel.publish("audio-chunk", {
+        from: callerNumber,
+        to: calledNumber,
+        audioData: audioDataBase64,
+        timestamp: Date.now()
+      });
+
+      console.log(`📡 Chunk audio publié sur Ably (${channelName})`);
+    }
+
+    // ==================== POLLING checkIncomingCalls ====================
+    if (status === "INITIATED" && !callerNumber && calledNumber) {
+      const pending = pendingCalls.get(calledNumber);
+      if (pending) {
+        console.log(`✅ APPEL ENTRANT TROUVÉ → caller="${pending.caller}"`);
+        return res.status(200).json({
+          success: true,
+          data: {
+            callId: body.callId || `in-${Date.now()}`,
+            call: {
+              caller: pending.caller,
+              called: calledNumber,
+              status: "INITIATED",
+            },
+          },
+          message: "✅ Oracle a capturé le vrai caller",
+        });
+      }
+    }
+
+    // Nettoyage automatique
+    setTimeout(() => pendingCalls.delete(calledNumber), 60000);
+
+    // Réponse SS7
+    const timestamp = BigInt(body.timestamp || Math.floor(Date.now() / 1000));
+    const callerHash = BigInt("0x" + ethers.id(callerNumber || "unknown").slice(2, 18));
+    const calledHash = BigInt("0x" + ethers.id(calledNumber || "unknown").slice(2, 18));
+
+    const payloadHex = "0x010b" + Buffer.from(callerNumber + calledNumber).toString("hex");
+
+    let txHash = null;
+    try {
+      const tx = await contract.initiateCall(
+        0xec,
+        0x01,
+        callerHash,
+        calledHash,
+        timestamp,
+        0n,
+        payloadHex,
+        { gasLimit: 400000 }
+      );
+      txHash = tx.hash;
+    } catch (e) {
+      console.warn("⚠️ initiateCall warning:", e.message);
+    }
 
     return res.status(200).json({
       success: true,
       data: {
-        callId: activeCall.callId,
-        call: { caller: activeCall.caller, called: activeCall.called, status: "ANSWERED" },
-        audioData: audioToReturn || "",
+        callId: `call-${Date.now()}`,
+        call: {
+          caller: callerNumber || "unknown",
+          called: calledNumber || "unknown",
+          status: status,
+        },
+        payload: { hex: payloadHex },
       },
-      message: "✅ Chunk audio capturé",
+      message: "✅ Oracle SS7 + Ably prêt",
     });
-  }/* eslint-disable @typescript-eslint/no-explicit-any */
-import type { NextApiRequest, NextApiResponse } from "next";
-import { ethers } from "ethers";
-
-// Configuration du body parser pour accepter de gros fichiers (audio, etc.)
-export const config = {
-  api: { bodyParser: { sizeLimit: "50mb" } },
-};
-
-// Adresse RPC pour accéder à la blockchain (SLURA)
-const SLURA_RPC = process.env.SLURA_RPC!;
-
-// Adresse du smart contract Oracle
-const CONTRACT_ADDRESS = "0x62598a7a170c52a66a020216f4dCb706af3E89F6";
-
-// Clé API pour sécuriser l'accès à l'oracle
-const ORACLE_API_KEY = process.env.ORACLE_API_KEY!;
-
-// Initialisation du provider et du wallet pour interagir avec le smart contract
-const provider = new ethers.JsonRpcProvider(SLURA_RPC);
-const wallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
-
-// Stockage de l'appel actif (en mémoire)
-let activeCall: {
-  caller: string;
-  called: string;
-  callId: string;
-} | null = null;
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Autoriser uniquement les requêtes POST
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  // Vérification de la clé API
-  const apiKey = req.headers["x-api-key"] as string;
-  if (apiKey !== ORACLE_API_KEY) return res.status(401).json({ error: "Unauthorized" });
-
-  // Extraction des données d'appel
-  const body = req.body || {};
-  const caller = (body.callerNumber || body.caller || body.From || "").trim();
-  const called = (body.calledNumber || body.called || body.To || "").trim();
-  const status = (body.status || body.CallStatus || "INITIATED").toUpperCase();
-
-  // Log de l'appel reçu
-  console.log(`📥 ORACLE → caller="${caller}" | called="${called}" | status="${status}"`);
-
-  // Enregistrement de l'appel Twilio lors de l'initiation
-  if (status === "INITIATED" && caller && called && caller !== called) {
-    const callId = `tw-${Date.now()}`;
-    activeCall = { caller, called, callId };
-    console.log(`📌 Appel Twilio enregistré : ${caller} → ${called}`);
+  } catch (err: any) {
+    console.error("🔥 ERREUR ORACLE:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
-
-  // Ici tu pourrais interagir avec le smart contract Oracle à l'adresse CONTRACT_ADDRESS
-  // Par exemple, enregistrer l'appel sur la blockchain via ethers.js :
-  // await wallet.sendTransaction({ ... });
-
-  // Réponse avec l'adresse du contrat et les infos d'appel
-  if (activeCall) {
-    return res.status(200).json({
-      success: true,
-      contractAddress: CONTRACT_ADDRESS,
-      data: {
-        callId: activeCall.callId,
-        call: { caller: activeCall.caller, called: activeCall.called, status: "ANSWERED" },
-      },
-      message: "Appel enregistré (logique blockchain à implémenter ici)."
-    });
-  }
-
-  // Réponse par défaut si aucun appel actif
-  return res.status(200).json({ success: true, contractAddress: CONTRACT_ADDRESS, message: "OK" });
 }
