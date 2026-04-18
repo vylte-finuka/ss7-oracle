@@ -12,7 +12,7 @@ export const config = {
 };
 
 const SLURA_RPC = process.env.SLURA_RPC!;
-const CONTRACT_ADDRESS = "0x62598a7a170c52a66a020216f4dCb706af3E89F6";
+const CONTRACT_ADDRESS = "0x9525Fb964d65AD6E45Eb3254d9177245D047f1f3";
 const ORACLE_API_KEY = process.env.ORACLE_API_KEY!;
 
 const provider = new ethers.JsonRpcProvider(SLURA_RPC);
